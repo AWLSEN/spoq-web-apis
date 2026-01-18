@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Authorize CLI Login - spoq</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background-color: #0d1117;
+            color: #c9d1d9;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 600px;
+            width: 100%;
+            background-color: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            padding: 32px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 32px;
+        }
+
+        .header h1 {
+            color: #58a6ff;
+            font-size: 24px;
+            margin-bottom: 8px;
+        }
+
+        .header p {
+            color: #8b949e;
+            font-size: 14px;
+        }
+
+        .device-info {
+            background-color: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 16px;
+            margin-bottom: 24px;
+        }
+
+        .device-info .label {
+            font-size: 12px;
+            color: #8b949e;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+
+        .device-info .value {
+            font-size: 16px;
+            color: #c9d1d9;
+            font-weight: 600;
+        }
+
+        .word-code-container {
+            background-color: #0d1117;
+            border: 2px solid #58a6ff;
+            border-radius: 8px;
+            padding: 24px;
+            margin-bottom: 32px;
+            text-align: center;
+        }
+
+        .word-code-label {
+            font-size: 12px;
+            color: #8b949e;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+        }
+
+        .word-code {
+            font-size: 32px;
+            font-weight: 700;
+            color: #58a6ff;
+            font-family: 'SF Mono', 'Consolas', 'Liberation Mono', Menlo, monospace;
+            letter-spacing: 2px;
+        }
+
+        .buttons {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+
+        .btn {
+            flex: 1;
+            padding: 14px 24px;
+            border: none;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-approve {
+            background-color: #238636;
+            color: #ffffff;
+        }
+
+        .btn-approve:hover {
+            background-color: #2ea043;
+        }
+
+        .btn-approve:active {
+            background-color: #238636;
+        }
+
+        .btn-deny {
+            background-color: #da3633;
+            color: #ffffff;
+        }
+
+        .btn-deny:hover {
+            background-color: #e54640;
+        }
+
+        .btn-deny:active {
+            background-color: #da3633;
+        }
+
+        .btn-github {
+            width: 100%;
+            padding: 14px 24px;
+            background-color: #238636;
+            border: none;
+            border-radius: 6px;
+            color: #ffffff;
+            font-weight: 600;
+            font-size: 14px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            text-decoration: none;
+            display: inline-block;
+            text-align: center;
+        }
+
+        .btn-github:hover {
+            background-color: #2ea043;
+        }
+
+        .success-state {
+            text-align: center;
+            padding: 24px;
+        }
+
+        .success-state .icon {
+            font-size: 64px;
+            color: #238636;
+            margin-bottom: 16px;
+        }
+
+        .success-state .message {
+            font-size: 18px;
+            color: #238636;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .success-state .sub-message {
+            font-size: 14px;
+            color: #8b949e;
+        }
+
+        .denied-state {
+            text-align: center;
+            padding: 24px;
+        }
+
+        .denied-state .icon {
+            font-size: 64px;
+            color: #da3633;
+            margin-bottom: 16px;
+        }
+
+        .denied-state .message {
+            font-size: 18px;
+            color: #da3633;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .denied-state .sub-message {
+            font-size: 14px;
+            color: #8b949e;
+        }
+
+        .error-state {
+            background-color: rgba(218, 54, 51, 0.15);
+            border: 1px solid #da3633;
+            border-radius: 6px;
+            padding: 16px;
+            margin-bottom: 24px;
+        }
+
+        .error-state .title {
+            font-size: 14px;
+            color: #f85149;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .error-state .message {
+            font-size: 13px;
+            color: #f85149;
+        }
+
+        .info {
+            background-color: rgba(88, 166, 255, 0.15);
+            border: 1px solid #58a6ff;
+            border-radius: 6px;
+            padding: 12px 16px;
+            font-size: 13px;
+            color: #79c0ff;
+        }
+
+        .info strong {
+            display: block;
+            margin-bottom: 4px;
+        }
+
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Pending State (default) -->
+        <div id="pendingState" class="{{#if (eq STATE 'pending')}}{{else}}hidden{{/if}}">
+            <div class="header">
+                <h1>Authorize CLI Login</h1>
+                <p>Confirm this device to access your spoq account</p>
+            </div>
+
+            <div class="device-info">
+                <div class="label">Device</div>
+                <div class="value">{{HOSTNAME}}</div>
+            </div>
+
+            <div class="word-code-container">
+                <div class="word-code-label">Verification Code</div>
+                <div class="word-code">{{WORD_CODE}}</div>
+            </div>
+
+            <form method="POST" action="/auth/authorize">
+                <input type="hidden" name="word_code" value="{{WORD_CODE}}">
+                <div class="buttons">
+                    <button type="submit" name="approved" value="true" class="btn btn-approve">Approve</button>
+                    <button type="submit" name="approved" value="false" class="btn btn-deny">Deny</button>
+                </div>
+            </form>
+
+            <div class="info">
+                <strong>Security Tip</strong>
+                Verify this code matches what's shown in your CLI before approving.
+            </div>
+        </div>
+
+        <!-- Not Logged In State -->
+        <div id="notLoggedInState" class="{{#if (eq STATE 'not_logged_in')}}{{else}}hidden{{/if}}">
+            <div class="header">
+                <h1>Authorize CLI Login</h1>
+                <p>Sign in to authorize this device</p>
+            </div>
+
+            <div class="device-info">
+                <div class="label">Device</div>
+                <div class="value">{{HOSTNAME}}</div>
+            </div>
+
+            <div class="word-code-container">
+                <div class="word-code-label">Verification Code</div>
+                <div class="word-code">{{WORD_CODE}}</div>
+            </div>
+
+            <a href="{{LOGIN_URL}}" class="btn-github">Login with GitHub</a>
+
+            <div class="info" style="margin-top: 24px;">
+                <strong>Security Tip</strong>
+                After logging in, you'll be able to approve or deny this device.
+            </div>
+        </div>
+
+        <!-- Success State -->
+        <div id="successState" class="{{#if (eq STATE 'success')}}{{else}}hidden{{/if}}">
+            <div class="success-state">
+                <div class="icon">✓</div>
+                <div class="message">Device Authorized!</div>
+                <div class="sub-message">You can close this tab now.</div>
+            </div>
+        </div>
+
+        <!-- Denied State -->
+        <div id="deniedState" class="{{#if (eq STATE 'denied')}}{{else}}hidden{{/if}}">
+            <div class="denied-state">
+                <div class="icon">✗</div>
+                <div class="message">Authorization Denied</div>
+                <div class="sub-message">The device authorization request was denied.</div>
+            </div>
+        </div>
+
+        <!-- Error State -->
+        <div id="errorState" class="{{#if (eq STATE 'error')}}{{else}}hidden{{/if}}">
+            <div class="header">
+                <h1>Authorization Error</h1>
+            </div>
+
+            <div class="error-state">
+                <div class="title">Unable to Process Request</div>
+                <div class="message">{{ERROR_MESSAGE}}</div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

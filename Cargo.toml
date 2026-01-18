@@ -1,0 +1,55 @@
+[package]
+name = "spoq-web-apis"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Web framework - latest 4.x
+actix-web = "4.12"
+actix-rt = "2"
+
+# Database - latest 0.8.x with runtime-tokio for async
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "uuid", "chrono"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_urlencoded = "0.7"
+
+# Auth & Security
+jsonwebtoken = "9"
+argon2 = "0.5"
+
+# HTTP client - latest 0.12.x
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Utilities
+rand = "0.8"
+base64 = "0.22"
+dotenvy = "0.15"
+url = "2"
+urlencoding = "2"
+
+# Async runtime - latest 1.x
+tokio = { version = "1.49", features = ["full"] }
+
+# Error handling
+thiserror = "2"
+
+# Rate limiting
+actix-governor = "0.8"
+
+# Encoding utilities
+hex = "0.4"
+
+# Time handling for cookies
+time = "0.3"
+
+# Time & IDs
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-actix-web = "0.7"
