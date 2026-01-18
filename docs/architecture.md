@@ -907,23 +907,42 @@ The systemd configuration ensures:
 
 ## Subscription Lifecycle
 
+### States
+
 ```
-┌─────────────────┐
-│    ACTIVE       │ ← User pays, VPS running
-└────────┬────────┘
-         │
-         │ Payment fails / User cancels
-         ▼
-┌─────────────────┐
-│   CANCELLED     │ ← Grace period (7 days)
-└────────┬────────┘
-         │
-         │ Grace period ends
-         ▼
-┌─────────────────┐
-│    EXPIRED      │ ← VPS terminated, data deleted
-└─────────────────┘
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   ACTIVE    │────▶│  CANCELLED  │────▶│   PAUSED    │────▶│  TERMINATED │
+│             │     │ (Grace 7d)  │     │ (Keep 30d)  │     │ (Deleted)   │
+└─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
+       │                   │                   │
+       │         Resumes ──┘         Resumes ──┘
+       │              │                   │
+       └──────────────┴───────────────────┘
+                      ▼
+              ✅ Data Preserved
 ```
+
+| State | VPS Status | Data | Can Resume? | Duration |
+|-------|------------|------|-------------|----------|
+| **Active** | Running | ✅ | - | While paying |
+| **Cancelled** | Running | ✅ | ✅ Instant | 7 days grace |
+| **Paused** | Stopped | ✅ | ✅ Instant | 30 days |
+| **Terminated** | Deleted | ❌ | ❌ Fresh start | - |
+
+### Cancel Flow
+
+```
+Day 0:  User cancels → VPS keeps running (grace period)
+Day 7:  Grace ends → VPS powered OFF (data preserved)
+Day 37: Pause ends → VPS DELETED (data gone)
+```
+
+### Resume Flow
+
+User can resume anytime before termination:
+- Payment collected
+- VPS powered back on (if paused)
+- All data intact
 
 ### Webhook Handling
 
@@ -936,6 +955,47 @@ Stripe webhook: subscription.deleted
   → Terminate VPS
   → Delete user data
 ```
+
+---
+
+## VPS Upgrades (Resize)
+
+Users can upgrade their VPS plan without losing data.
+
+```
+Before:  2 vCPU, 4GB RAM, 50GB disk
+              ↓ (upgrade)
+After:   4 vCPU, 8GB RAM, 100GB disk
+
+Data: ✅ Preserved
+Downtime: ~1-5 minutes (reboot)
+```
+
+### API Calls
+
+| Provider | Endpoint |
+|----------|----------|
+| Contabo | `POST /v1/compute/instances/:id/upgrades` |
+| Hostinger | `POST /api/vps/v1/virtual-machines/:id/plan-change` |
+
+---
+
+## Future: Bring Your Own VPS
+
+For later - allow users to connect their own VPS:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Signup Options (Future)                                        │
+├─────────────────────────────────────────────────────────────────┤
+│  ○ Managed VPS ($20/mo) - We provision everything               │
+│  ○ BYOVPS ($10/mo) - Use your own server                        │
+└─────────────────────────────────────────────────────────────────┘
+
+User provides IP → Runs setup script → Conductor installed → Connected
+```
+
+Not MVP. Add when users request it.
 
 ---
 
@@ -1013,14 +1073,672 @@ BASE_URL=https://spoq.dev
 
 ---
 
+## Private Binary Distribution
+
+Both Conductor and CLI are private - not publicly downloadable.
+
+### Distribution Strategy
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                 Private Binary Distribution                     │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  Binaries stored in: Cloudflare R2 / AWS S3 (private bucket)    │
+│                                                                 │
+│  Download requires: Signed URL (expires in 10-30 min)           │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### For Conductor (VPS Provisioning)
+
+```
+1. User completes signup
+
+2. Backend generates:
+   - Provisioning token (one-time, expires 30 min)
+   - Signed download URLs for conductor + CLI
+
+3. Backend calls Contabo API with cloud-init script containing URLs
+
+4. VPS downloads binaries using signed URLs
+
+5. URLs expire - useless to anyone who intercepts them
+```
+
+**Cloud-init script receives signed URLs:**
+
+```bash
+#!/bin/bash
+# URLs are pre-signed, expire in 30 min
+CONDUCTOR_URL="https://releases.spoq.dev/conductor-linux-amd64?token=eyJhbG..."
+CLI_URL="https://releases.spoq.dev/spoq-linux-amd64?token=eyJhbG..."
+
+curl -sSL "$CONDUCTOR_URL" -o /usr/local/bin/conductor
+curl -sSL "$CLI_URL" -o /usr/local/bin/spoq
+chmod +x /usr/local/bin/conductor /usr/local/bin/spoq
+```
+
+### For CLI (Mac Install)
+
+After signup, web shows personalized install command:
+
+```bash
+# Shown on web after signup (token is one-time, tied to user)
+curl -sSL "https://spoq.dev/install?token=abc123xyz" | bash
+```
+
+**Install script flow:**
+
+```bash
+#!/bin/bash
+# install.sh - served dynamically with embedded token
+
+set -e
+
+TOKEN="$1"  # Passed from URL or extracted
+
+# Verify token and get signed binary URL
+RESPONSE=$(curl -s "https://api.spoq.dev/releases/cli?token=$TOKEN")
+BINARY_URL=$(echo "$RESPONSE" | jq -r '.download_url')
+
+if [ "$BINARY_URL" == "null" ]; then
+    echo "Invalid or expired token. Please get a new link from spoq.dev"
+    exit 1
+fi
+
+# Detect OS/arch
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m)
+case $ARCH in
+    x86_64) ARCH="amd64" ;;
+    arm64|aarch64) ARCH="arm64" ;;
+esac
+
+# Download binary
+curl -sSL "$BINARY_URL" -o /usr/local/bin/spoq
+chmod +x /usr/local/bin/spoq
+
+echo "✓ Spoq installed!"
+echo "Run 'spoq init' to authenticate."
+```
+
+### Signed URL Generation (Backend)
+
+```rust
+use jsonwebtoken::{encode, Header, EncodingKey};
+
+#[derive(Serialize)]
+struct DownloadToken {
+    binary: String,      // "conductor-linux-amd64"
+    user_id: String,     // For audit
+    exp: usize,          // Expires in 30 min
+    one_time: bool,      // Invalidate after use
+}
+
+fn generate_signed_url(binary: &str, user_id: &str) -> String {
+    let token = DownloadToken {
+        binary: binary.to_string(),
+        user_id: user_id.to_string(),
+        exp: (chrono::Utc::now() + chrono::Duration::minutes(30)).timestamp() as usize,
+        one_time: true,
+    };
+
+    let jwt = encode(
+        &Header::default(),
+        &token,
+        &EncodingKey::from_secret(DOWNLOAD_SECRET.as_bytes()),
+    ).unwrap();
+
+    format!("https://releases.spoq.dev/{}?token={}", binary, jwt)
+}
+```
+
+### Download Endpoint
+
+```rust
+// GET /releases/:binary?token=xxx
+async fn download_binary(
+    path: web::Path<String>,
+    query: web::Query<TokenQuery>,
+) -> Result<impl Responder> {
+    let binary = path.into_inner();
+    let token = decode_and_verify(&query.token)?;
+
+    // Check token matches requested binary
+    if token.binary != binary {
+        return Err(Error::Forbidden);
+    }
+
+    // If one-time, mark as used (store in Redis/DB)
+    if token.one_time {
+        mark_token_used(&query.token).await?;
+    }
+
+    // Stream binary from private S3/R2
+    let stream = s3_client.get_object(&binary).await?;
+    Ok(HttpResponse::Ok()
+        .content_type("application/octet-stream")
+        .streaming(stream))
+}
+```
+
+### Storage: Baked into Docker Image
+
+No external storage service. Binaries included in the Docker image.
+
+```dockerfile
+# Dockerfile
+FROM rust:1.75 as builder
+WORKDIR /app
+COPY . .
+RUN cargo build --release
+
+FROM debian:bookworm-slim
+COPY --from=builder /app/target/release/spoq-web-apis /app/
+COPY ./binaries/ /app/binaries/
+EXPOSE 8080
+CMD ["/app/spoq-web-apis"]
+```
+
+**Binary directory:**
+```
+binaries/
+├── conductor-linux-amd64
+├── spoq-linux-amd64
+├── spoq-darwin-amd64
+└── spoq-darwin-arm64
+```
+
+**Serve endpoint:**
+```rust
+// GET /releases/:binary?token=xxx
+async fn download_binary(
+    path: web::Path<String>,
+    query: web::Query<TokenQuery>,
+) -> Result<impl Responder> {
+    verify_download_token(&query.token)?;
+
+    let binary = path.into_inner();
+    let file_path = format!("/app/binaries/{}", binary);
+
+    Ok(NamedFile::open(file_path)?)
+}
+```
+
+**Pros:** Simple, no external service, Railway-only
+**Cons:** Redeploy to update binaries (fine for infrequent releases)
+
+---
+
+## Auto-Update System
+
+Both Conductor and CLI should auto-update when new versions are available.
+
+### Version Check Endpoint
+
+```rust
+// GET /releases/version
+#[derive(Serialize)]
+struct VersionInfo {
+    conductor: String,      // "1.2.3"
+    cli: String,            // "1.2.3"
+    min_conductor: String,  // Minimum supported version
+    min_cli: String,
+}
+
+async fn get_versions() -> impl Responder {
+    HttpResponse::Ok().json(VersionInfo {
+        conductor: "1.2.3".into(),
+        cli: "1.2.3".into(),
+        min_conductor: "1.0.0".into(),
+        min_cli: "1.0.0".into(),
+    })
+}
+```
+
+### Conductor Auto-Update (VPS)
+
+Conductor checks for updates periodically and updates itself.
+
+**Update flow:**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                   Conductor Auto-Update                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  1. Conductor runs update check every 6 hours                   │
+│                                                                 │
+│  2. GET https://api.spoq.dev/releases/version                   │
+│     → Returns: { conductor: "1.3.0", ... }                      │
+│                                                                 │
+│  3. Compare with current version                                │
+│     → If newer: trigger update                                  │
+│                                                                 │
+│  4. Download new binary to temp file                            │
+│     GET /releases/conductor-linux-amd64?token=xxx               │
+│                                                                 │
+│  5. Verify checksum                                             │
+│                                                                 │
+│  6. Replace binary and restart via systemd                      │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Conductor update code:**
+
+```rust
+use std::process::Command;
+
+const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+async fn check_and_update() -> Result<()> {
+    // 1. Check latest version
+    let version_info: VersionInfo = reqwest::get("https://api.spoq.dev/releases/version")
+        .await?
+        .json()
+        .await?;
+
+    // 2. Compare versions
+    if !is_newer(&version_info.conductor, CURRENT_VERSION) {
+        return Ok(()); // Already up to date
+    }
+
+    tracing::info!("New version available: {} -> {}", CURRENT_VERSION, version_info.conductor);
+
+    // 3. Download new binary
+    let token = get_update_token().await?;
+    let url = format!(
+        "https://api.spoq.dev/releases/conductor-linux-amd64?token={}",
+        token
+    );
+
+    let bytes = reqwest::get(&url).await?.bytes().await?;
+
+    // 4. Write to temp file
+    let temp_path = "/tmp/conductor-new";
+    std::fs::write(temp_path, &bytes)?;
+    std::fs::set_permissions(temp_path, std::fs::Permissions::from_mode(0o755))?;
+
+    // 5. Verify checksum (optional but recommended)
+    verify_checksum(temp_path, &version_info.conductor_checksum)?;
+
+    // 6. Replace and restart
+    std::fs::rename(temp_path, "/usr/local/bin/conductor")?;
+
+    // Restart via systemd (conductor will be restarted)
+    Command::new("systemctl")
+        .args(["restart", "conductor"])
+        .spawn()?;
+
+    Ok(())
+}
+
+// Run update check in background
+fn start_update_checker() {
+    tokio::spawn(async {
+        let mut interval = tokio::time::interval(Duration::from_secs(6 * 60 * 60)); // 6 hours
+        loop {
+            interval.tick().await;
+            if let Err(e) = check_and_update().await {
+                tracing::error!("Update check failed: {}", e);
+            }
+        }
+    });
+}
+```
+
+**Systemd handles restart:**
+```ini
+[Service]
+Restart=always
+RestartSec=5
+```
+
+### CLI Auto-Update (Mac/VPS)
+
+CLI checks for updates on startup.
+
+**Update flow:**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      CLI Auto-Update                            │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  $ spoq ask "help me"                                           │
+│                                                                 │
+│  1. On startup, check version (cached, max once per day)        │
+│                                                                 │
+│  2. If update available:                                        │
+│     ┌─────────────────────────────────────────────────────────┐ │
+│     │ A new version of Spoq is available (1.2.3 → 1.3.0)      │ │
+│     │ Run 'spoq update' to update.                            │ │
+│     └─────────────────────────────────────────────────────────┘ │
+│                                                                 │
+│  3. User runs: spoq update                                      │
+│     → Downloads new binary                                      │
+│     → Replaces current binary                                   │
+│     → Done!                                                     │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**CLI update code:**
+
+```rust
+const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const VERSION_CHECK_FILE: &str = "~/.spoq/last_version_check";
+
+async fn check_for_updates() -> Option<String> {
+    // Only check once per day
+    if recently_checked() {
+        return None;
+    }
+
+    let version_info: VersionInfo = reqwest::get("https://api.spoq.dev/releases/version")
+        .await.ok()?
+        .json()
+        .await.ok()?;
+
+    save_check_timestamp();
+
+    if is_newer(&version_info.cli, CURRENT_VERSION) {
+        Some(version_info.cli)
+    } else {
+        None
+    }
+}
+
+// Called on CLI startup
+async fn maybe_notify_update() {
+    if let Some(new_version) = check_for_updates().await {
+        eprintln!("┌─────────────────────────────────────────────────┐");
+        eprintln!("│ A new version of Spoq is available: {} → {} │", CURRENT_VERSION, new_version);
+        eprintln!("│ Run 'spoq update' to update.                   │");
+        eprintln!("└─────────────────────────────────────────────────┘");
+        eprintln!();
+    }
+}
+
+// spoq update command
+async fn do_update() -> Result<()> {
+    let version_info: VersionInfo = reqwest::get("https://api.spoq.dev/releases/version")
+        .await?
+        .json()
+        .await?;
+
+    if !is_newer(&version_info.cli, CURRENT_VERSION) {
+        println!("Already up to date ({})", CURRENT_VERSION);
+        return Ok(());
+    }
+
+    println!("Updating {} → {}...", CURRENT_VERSION, version_info.cli);
+
+    // Detect OS/arch
+    let binary_name = format!("spoq-{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+
+    // Get download token
+    let token = get_update_token().await?;
+    let url = format!("https://api.spoq.dev/releases/{}?token={}", binary_name, token);
+
+    // Download
+    let bytes = reqwest::get(&url).await?.bytes().await?;
+
+    // Get current executable path
+    let current_exe = std::env::current_exe()?;
+    let temp_path = current_exe.with_extension("new");
+
+    // Write new binary
+    std::fs::write(&temp_path, &bytes)?;
+
+    #[cfg(unix)]
+    std::fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(0o755))?;
+
+    // Replace current binary
+    std::fs::rename(&temp_path, &current_exe)?;
+
+    println!("✓ Updated to {}", version_info.cli);
+    Ok(())
+}
+```
+
+### Update Token Generation
+
+Updates require a valid token (user must be authenticated):
+
+```rust
+// For Conductor: uses VPS-specific token
+fn get_conductor_update_token() -> String {
+    // Read from /etc/spoq/config.toml
+    // Token is set during provisioning, long-lived
+}
+
+// For CLI: uses user's refresh token
+async fn get_cli_update_token() -> Result<String> {
+    let creds = load_credentials()?;
+    // Exchange refresh token for download token
+    let response = reqwest::Client::new()
+        .post("https://api.spoq.dev/releases/token")
+        .bearer_auth(&creds.access_token)
+        .send()
+        .await?;
+
+    Ok(response.json::<TokenResponse>().await?.download_token)
+}
+```
+
+### Version File (for releases)
+
+Include version info in the build:
+
+```toml
+# Cargo.toml
+[package]
+version = "1.2.3"  # Source of truth
+```
+
+```rust
+// Access at runtime
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+```
+
+---
+
+## Web Frontend
+
+All-in-one with Rust backend using Askama templates.
+
+### Stack: Askama (Jinja-like templates in Rust)
+
+```
+spoq-web-apis/
+├── src/
+│   ├── handlers/
+│   │   ├── auth.rs          # OAuth endpoints
+│   │   ├── api.rs           # API endpoints
+│   │   └── pages.rs         # HTML page handlers
+│   └── templates/
+│       ├── base.html        # Base layout
+│       ├── signup.html
+│       ├── password.html
+│       ├── complete.html
+│       └── dashboard.html
+```
+
+**Why Askama (not separate frontend):**
+- Single project, single deploy
+- No CORS issues
+- No JS build step
+- Simple flows don't need SPA
+- Can always extract later if needed
+
+### Page Handlers
+
+```rust
+use askama::Template;
+
+#[derive(Template)]
+#[template(path = "signup.html")]
+struct SignupPage {}
+
+#[derive(Template)]
+#[template(path = "complete.html")]
+struct CompletePage {
+    hostname: String,
+    install_command: String,
+    ssh_password: String,
+}
+
+async fn signup_page() -> impl Responder {
+    SignupPage {}.render().unwrap()
+}
+
+async fn complete_page(user: AuthenticatedUser, db: web::Data<PgPool>) -> impl Responder {
+    let vps = get_user_vps(&db, user.id).await.unwrap();
+    let token = generate_download_token(&user.id);
+
+    CompletePage {
+        hostname: vps.hostname,
+        install_command: format!("curl -sSL 'https://spoq.dev/install?token={}' | bash", token),
+        ssh_password: "(your password)", // Don't show actual password, user knows it
+    }.render().unwrap()
+}
+```
+
+### Key Pages
+
+**1. `/signup`** - GitHub OAuth button
+**2. `/setup/password`** - Create SSH password form
+**3. `/setup/complete`** - Show install command + SSH info
+**4. `/dashboard`** - VPS status, connection info
+
+### Deployment: Railway Only
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         RAILWAY                                 │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  spoq.dev                                                       │
+│  └── spoq-web-apis (Rust/Actix)                                 │
+│      ├── /                 ← Landing page                       │
+│      ├── /signup           ← Signup page                        │
+│      ├── /setup/*          ← Setup flow                         │
+│      ├── /dashboard        ← User dashboard                     │
+│      ├── /auth/*           ← OAuth endpoints                    │
+│      ├── /api/*            ← API endpoints                      │
+│      └── /releases/*       ← Binary downloads                   │
+│                                                                 │
+│  PostgreSQL                ← Database                           │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+Single deploy. Single domain. No CORS.
+
+---
+
 ## Summary
 
 | Component | Technology | Purpose |
 |-----------|------------|---------|
-| Central Backend | Rust/Actix | Auth, payments, VPS orchestration |
-| User VPS | Ubuntu + Spoq API | AI execution environment |
+| Backend + Frontend | Rust/Actix + Askama | Auth, pages, API, binary downloads |
+| Database | PostgreSQL (Railway) | Users, subscriptions, VPS records |
+| User VPS | Ubuntu + Conductor | AI execution environment |
 | CLI | Rust | Local interface, file context |
-| Database | PostgreSQL | Users, subscriptions, VPS records |
-| Payments | Stripe | Subscription management |
+| Payments | Stripe | Subscription management (last) |
 | VPS Provider | Contabo/Hostinger | Infrastructure |
-| DNS | Cloudflare/Route53 | *.spoq.dev routing |
+| Hosting | Railway | Everything (backend, DB, binaries) |
+| DNS | Cloudflare | *.spoq.dev routing |
+
+## External Dependencies
+
+| Service | Purpose | Required | Cost |
+|---------|---------|----------|------|
+| **Railway** | Backend + PostgreSQL | ✅ Yes | ~$5-20/mo |
+| **Contabo** or **Hostinger** | VPS provisioning | ✅ Yes (one) | ~$5-15/user/mo |
+| **Cloudflare** | DNS (*.spoq.dev) | ✅ Yes | Free |
+| **GitHub** | OAuth provider | ✅ Yes | Free |
+| **Stripe** | Payments | ✅ Yes (later) | 2.9% + $0.30/txn |
+
+### VPS Provider Limits
+
+| Provider | Default Limit | Increase |
+|----------|---------------|----------|
+| Contabo | 75 VPS/account | Contact support |
+| Hostinger | Not documented | Contact support |
+
+### What You DON'T Need
+
+| Service | Why Not |
+|---------|---------|
+| ~~AWS S3 / R2~~ | Binaries in Docker image |
+| ~~Vercel / Pages~~ | Askama templates in Rust |
+| ~~Auth0~~ | GitHub OAuth built-in |
+| ~~Redis~~ | PostgreSQL sufficient |
+| ~~SendGrid~~ | No email (show on web) |
+
+---
+
+## Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         RAILWAY                                 │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  spoq.dev (Rust/Actix + Askama)                                 │
+│  ├── HTML Pages (signup, dashboard, etc.)                       │
+│  ├── OAuth + Auth APIs                                          │
+│  ├── VPS Provisioning APIs                                      │
+│  ├── Binary Downloads (/releases/*)                             │
+│  └── Version Check (/releases/version)                          │
+│                                                                 │
+│  PostgreSQL                                                     │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+          │                              │
+          │ Provision VPS                │ Download binaries
+          ▼                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              USER'S VPS (Contabo/Hostinger)                     │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  alice.spoq.dev                                                 │
+│  ├── Conductor (systemd, auto-updates every 6h)                 │
+│  ├── Spoq CLI (for SSH users, `spoq update` command)            │
+│  └── Caddy (reverse proxy, auto SSL)                            │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+          ▲                              ▲
+          │ HTTPS + JWT                  │ SSH (password)
+          │                              │
+┌─────────────────────┐    ┌─────────────────────────────────────┐
+│  Desktop CLI (Mac)  │    │  Mobile (Termius)                   │
+│  spoq ask "..."     │    │  ssh spoq@alice.spoq.dev            │
+└─────────────────────┘    └─────────────────────────────────────┘
+```
+
+---
+
+## Focus: MVP Checklist
+
+**Build in this order:**
+
+1. ☐ Database migrations (subscriptions, user_vps)
+2. ☐ HTML pages (Askama: signup, password, complete, dashboard)
+3. ☐ VPS provisioning API (Hostinger or Contabo)
+4. ☐ DNS automation (Cloudflare API for *.spoq.dev)
+5. ☐ Binary download endpoint (/releases/*)
+6. ☐ Auto-update endpoint (/releases/version)
+7. ☐ Cancel/resume flow
+8. ☐ Stripe integration (last)
+
+**Not MVP (later):**
+- VPS upgrades
+- BYOVPS
+- Multiple VPS providers
+- RS256 JWT upgrade
