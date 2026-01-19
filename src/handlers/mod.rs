@@ -18,6 +18,7 @@ pub use auth::{
 };
 pub use health::{health_check, HealthResponse};
 pub use vps::{
-    get_vps_status, list_datacenters, list_plans, provision_vps, restart_vps, start_vps, stop_vps,
-    DataCentersResponse, ProvisionResponse, SuccessResponse, VpsPlansResponse,
+    get_vps_status, list_datacenters, list_plans, provision_vps, reset_password, restart_vps,
+    start_vps, stop_vps, DataCentersResponse, ProvisionResponse, ResetPasswordRequest,
+    SuccessResponse, VpsPlansResponse,
 };

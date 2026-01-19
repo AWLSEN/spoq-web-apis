@@ -14,7 +14,8 @@ use spoq_web_apis::handlers::{
     device_authorize, device_init, device_token, device_verify, github_callback, github_redirect,
     health_check, refresh_token, revoke_token,
     // VPS handlers
-    get_vps_status, list_datacenters, list_plans, provision_vps, restart_vps, start_vps, stop_vps,
+    get_vps_status, list_datacenters, list_plans, provision_vps, reset_password, restart_vps,
+    start_vps, stop_vps,
 };
 use spoq_web_apis::middleware::create_rate_limiter;
 use spoq_web_apis::services::HostingerClient;
@@ -121,7 +122,8 @@ async fn main() -> std::io::Result<()> {
                         .route("/status", web::get().to(get_vps_status))
                         .route("/start", web::post().to(start_vps))
                         .route("/stop", web::post().to(stop_vps))
-                        .route("/restart", web::post().to(restart_vps)),
+                        .route("/restart", web::post().to(restart_vps))
+                        .route("/reset-password", web::post().to(reset_password)),
                 );
         }
 

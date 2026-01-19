@@ -497,3 +497,51 @@ pub async fn restart_vps(
         message: "VPS restart initiated".to_string(),
     }))
 }
+
+/// Request for password reset
+#[derive(Debug, serde::Deserialize)]
+pub struct ResetPasswordRequest {
+    /// New password (min 12 chars)
+    pub new_password: String,
+}
+
+/// Reset the root password for the user's VPS
+/// This is SAFE - does NOT delete any data
+///
+/// POST /api/vps/reset-password
+pub async fn reset_password(
+    user: AuthenticatedUser,
+    pool: web::Data<PgPool>,
+    hostinger: web::Data<HostingerClient>,
+    req: web::Json<ResetPasswordRequest>,
+) -> AppResult<HttpResponse> {
+    // Validate password length
+    if req.new_password.len() < 12 {
+        return Err(AppError::BadRequest(
+            "Password must be at least 12 characters".to_string(),
+        ));
+    }
+
+    let vps: Option<UserVps> = sqlx::query_as(
+        "SELECT * FROM user_vps WHERE user_id = $1 AND status != 'terminated' ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(user.user_id)
+    .fetch_optional(pool.get_ref())
+    .await?;
+
+    let vps = vps.ok_or_else(|| AppError::NotFound("No VPS found for user".to_string()))?;
+
+    let vm_id = vps
+        .provider_instance_id
+        .ok_or_else(|| AppError::BadRequest("VPS not yet provisioned".to_string()))?;
+
+    // Reset password via Hostinger API (safe, no data loss)
+    hostinger.reset_password(vm_id, &req.new_password).await?;
+
+    tracing::info!("Password reset for VPS {} (user {})", vps.id, user.user_id);
+
+    Ok(HttpResponse::Ok().json(SuccessResponse {
+        success: true,
+        message: "Password reset successful. Use the new password for SSH.".to_string(),
+    }))
+}

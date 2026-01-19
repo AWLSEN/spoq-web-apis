@@ -360,6 +360,38 @@ impl HostingerClient {
         .await
     }
 
+    /// Reset root password (safe - does NOT delete data)
+    pub async fn reset_password(&self, vm_id: i64, new_password: &str) -> Result<(), HostingerError> {
+        let url = format!(
+            "{}/api/vps/v1/virtual-machines/{}/root-password",
+            HOSTINGER_API_BASE, vm_id
+        );
+        let response = self
+            .client
+            .put(&url)
+            .bearer_auth(&self.api_key)
+            .json(&serde_json::json!({ "password": new_password }))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let error_body: ApiErrorResponse = response.json().await.unwrap_or(ApiErrorResponse {
+                message: Some("Unknown error".to_string()),
+                error: None,
+            });
+            return Err(HostingerError::Api {
+                status,
+                message: error_body
+                    .message
+                    .or(error_body.error)
+                    .unwrap_or_else(|| "Unknown error".to_string()),
+            });
+        }
+
+        Ok(())
+    }
+
     /// Get VPS actions (for tracking provisioning status)
     pub async fn get_vps_actions(&self, vm_id: i64) -> Result<Vec<VpsAction>, HostingerError> {
         self.get(&format!("/api/vps/v1/virtual-machines/{}/actions", vm_id))
