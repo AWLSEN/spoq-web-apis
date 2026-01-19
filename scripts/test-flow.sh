@@ -164,7 +164,7 @@ if [ -z "$ACCESS_TOKEN" ] || [ "$ACCESS_TOKEN" == "null" ]; then
         sleep "$INTERVAL"
         ATTEMPTS=$((ATTEMPTS + 1))
 
-        TOKEN_RESULT=$(api_call POST "/auth/device/token" "{\"device_code\":\"$DEVICE_CODE\"}")
+        TOKEN_RESULT=$(api_call POST "/auth/device/token" "{\"device_code\":\"$DEVICE_CODE\",\"grant_type\":\"device_code\"}")
 
         if echo "$TOKEN_RESULT" | jq -e '.access_token' > /dev/null 2>&1; then
             ACCESS_TOKEN=$(echo "$TOKEN_RESULT" | jq -r '.access_token')
