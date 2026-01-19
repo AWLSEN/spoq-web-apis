@@ -209,7 +209,7 @@ pub async fn provision_vps(
             data_center_id,
             hostname: Some(hostname.clone()),
             password: Some(req.ssh_password.clone()),
-            post_install_script_id: None, // TODO: Create and use post-install script
+            post_install_script_id: Some(2397), // spoq-minimal-setup script
             enable_backups: Some(true),
             public_key: None,
         },
