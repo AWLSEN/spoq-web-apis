@@ -1,0 +1,25 @@
+-- Security Model for spoq-web-apis
+-- ================================
+--
+-- This application uses APPLICATION-LEVEL security rather than database-level RLS:
+--
+-- 1. JWT AUTHENTICATION: Every request is validated by middleware
+--    - Extracts user_id from JWT token
+--    - Rejects invalid/expired tokens
+--
+-- 2. QUERY ISOLATION: All queries include WHERE user_id = $authenticated_user_id
+--    - Users can only query/modify their own data
+--    - Enforced in handler code, not database
+--
+-- 3. NO DIRECT DB ACCESS: Users interact only through the API
+--    - Database credentials are server-side only
+--    - Connection string never exposed to clients
+--
+-- Why not RLS?
+-- - Backend uses connection pooling with single role
+-- - Would need to SET session variable on each query (complex, slow)
+-- - App-level auth is simpler and equally secure for our use case
+--
+-- Add indexes for security-critical lookups
+CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id ON refresh_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_vps_user_id_status ON user_vps(user_id, status);

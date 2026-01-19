@@ -3,9 +3,11 @@
 //! This module contains all the route handlers:
 //! - `auth` - GitHub OAuth and device flow authentication handlers
 //! - `health` - Health check endpoint
+//! - `vps` - VPS provisioning and management handlers
 
 pub mod auth;
 pub mod health;
+pub mod vps;
 
 // Re-export commonly used types
 pub use auth::{
@@ -15,3 +17,7 @@ pub use auth::{
     RefreshRequest, RefreshResponse, RevokeRequest, VerifyQuery,
 };
 pub use health::{health_check, HealthResponse};
+pub use vps::{
+    get_vps_status, list_datacenters, list_plans, provision_vps, restart_vps, start_vps, stop_vps,
+    DataCentersResponse, ProvisionResponse, SuccessResponse, VpsPlansResponse,
+};

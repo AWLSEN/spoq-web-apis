@@ -12,6 +12,13 @@ pub struct Config {
     pub jwt_refresh_token_expiry_days: i64,
     pub host: String,
     pub port: u16,
+    // Hostinger VPS settings
+    pub hostinger_api_key: Option<String>,
+    pub default_vps_plan: String,
+    pub default_vps_template: i32,
+    pub default_vps_datacenter: i32,
+    // Base URL for the API (used for binary downloads, etc.)
+    pub base_url: String,
 }
 
 #[derive(Debug, Error)]
@@ -80,6 +87,37 @@ impl Config {
             .transpose()?
             .unwrap_or(8080); // Default: 8080
 
+        // Hostinger settings (optional for local development)
+        let hostinger_api_key = env::var("HOSTINGER_API_KEY").ok();
+
+        let default_vps_plan = env::var("DEFAULT_VPS_PLAN")
+            .unwrap_or_else(|_| "hostingercom-vps-kvm1-usd-1m".to_string());
+
+        let default_vps_template = env::var("DEFAULT_VPS_TEMPLATE")
+            .ok()
+            .map(|v| {
+                v.parse::<i32>().map_err(|e| ConfigError::InvalidValue {
+                    var: "DEFAULT_VPS_TEMPLATE".to_string(),
+                    message: e.to_string(),
+                })
+            })
+            .transpose()?
+            .unwrap_or(1007); // Default: Ubuntu 22.04 LTS
+
+        let default_vps_datacenter = env::var("DEFAULT_VPS_DATACENTER")
+            .ok()
+            .map(|v| {
+                v.parse::<i32>().map_err(|e| ConfigError::InvalidValue {
+                    var: "DEFAULT_VPS_DATACENTER".to_string(),
+                    message: e.to_string(),
+                })
+            })
+            .transpose()?
+            .unwrap_or(9); // Default: Phoenix, USA
+
+        let base_url =
+            env::var("BASE_URL").unwrap_or_else(|_| format!("http://{}:{}", host, port));
+
         Ok(Config {
             database_url,
             github_client_id,
@@ -90,6 +128,11 @@ impl Config {
             jwt_refresh_token_expiry_days,
             host,
             port,
+            hostinger_api_key,
+            default_vps_plan,
+            default_vps_template,
+            default_vps_datacenter,
+            base_url,
         })
     }
 

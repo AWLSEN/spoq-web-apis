@@ -8,6 +8,7 @@ use thiserror::Error;
 
 use crate::config::ConfigError;
 use crate::services::github::GithubError;
+use crate::services::hostinger::HostingerError;
 
 /// Unified application error type.
 ///
@@ -26,6 +27,10 @@ pub enum AppError {
     /// GitHub API errors
     #[error("GitHub error: {0}")]
     GitHub(#[from] GithubError),
+
+    /// Hostinger VPS API errors
+    #[error("Hostinger error: {0}")]
+    Hostinger(#[from] HostingerError),
 
     /// Token-related errors (generation, hashing, etc.)
     #[error("Token error: {0}")]
@@ -54,6 +59,7 @@ impl ResponseError for AppError {
             AppError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::Config(_) => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::GitHub(_) => StatusCode::BAD_GATEWAY,
+            AppError::Hostinger(_) => StatusCode::BAD_GATEWAY,
             AppError::Token(_) => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
@@ -72,6 +78,7 @@ impl ResponseError for AppError {
             AppError::Token(_) => "Token processing error".to_string(),
             // For these errors, expose the message
             AppError::GitHub(e) => format!("GitHub authentication error: {}", e),
+            AppError::Hostinger(e) => format!("VPS provisioning error: {}", e),
             AppError::Unauthorized(msg) => msg.clone(),
             AppError::BadRequest(msg) => msg.clone(),
             AppError::NotFound(msg) => msg.clone(),

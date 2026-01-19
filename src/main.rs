@@ -1,7 +1,8 @@
 //! spoq-web-apis - Main application entry point
 //!
 //! This is the main entry point for the spoq-web-apis service, which provides
-//! GitHub OAuth authentication with JWT token management and device flow support.
+//! GitHub OAuth authentication with JWT token management, device flow support,
+//! and VPS provisioning via Hostinger.
 
 use actix_web::{middleware::Logger, web, App, HttpServer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -12,8 +13,11 @@ use spoq_web_apis::handlers::auth::AppState;
 use spoq_web_apis::handlers::{
     device_authorize, device_init, device_token, device_verify, github_callback, github_redirect,
     health_check, refresh_token, revoke_token,
+    // VPS handlers
+    get_vps_status, list_datacenters, list_plans, provision_vps, restart_vps, start_vps, stop_vps,
 };
 use spoq_web_apis::middleware::create_rate_limiter;
+use spoq_web_apis::services::HostingerClient;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -54,10 +58,20 @@ async fn main() -> std::io::Result<()> {
 
     // Create shared application state
     let app_state = web::Data::new(AppState {
-        pool,
-        config,
+        pool: pool.clone(),
+        config: config.clone(),
         http_client,
     });
+
+    // Create Hostinger client if API key is configured
+    let hostinger_client = config.hostinger_api_key.as_ref().map(|key| {
+        tracing::info!("Hostinger API client configured");
+        web::Data::new(HostingerClient::new(key.clone()))
+    });
+
+    // Wrap pool and config for VPS handlers
+    let db_pool = web::Data::new(pool);
+    let app_config = web::Data::new(config);
 
     tracing::info!("Starting server at http://{}", server_addr);
 
@@ -65,8 +79,10 @@ async fn main() -> std::io::Result<()> {
         // Create rate limiter for each worker (Governor doesn't implement Clone)
         let rate_limiter = create_rate_limiter();
 
-        App::new()
+        let mut app = App::new()
             .app_data(app_state.clone())
+            .app_data(db_pool.clone())
+            .app_data(app_config.clone())
             // Request logging
             .wrap(Logger::default())
             // Distributed tracing
@@ -89,7 +105,27 @@ async fn main() -> std::io::Result<()> {
                     .route("/verify", web::get().to(device_verify))
                     .route("/authorize", web::post().to(device_authorize))
                     .route("/device/token", web::post().to(device_token)),
-            )
+            );
+
+        // Add VPS routes if Hostinger is configured
+        if let Some(ref hostinger) = hostinger_client {
+            app = app
+                .app_data(hostinger.clone())
+                .service(
+                    web::scope("/api/vps")
+                        // Public endpoints
+                        .route("/plans", web::get().to(list_plans))
+                        .route("/datacenters", web::get().to(list_datacenters))
+                        // Authenticated endpoints
+                        .route("/provision", web::post().to(provision_vps))
+                        .route("/status", web::get().to(get_vps_status))
+                        .route("/start", web::post().to(start_vps))
+                        .route("/stop", web::post().to(stop_vps))
+                        .route("/restart", web::post().to(restart_vps)),
+                );
+        }
+
+        app
     })
     .bind(&server_addr)?
     .run()
