@@ -27,7 +27,7 @@ echo ""
 echo -e "Base URL: ${YELLOW}$BASE_URL${NC}"
 echo ""
 
-# Helper function for API calls
+# Helper function for API calls with auto-refresh on 401
 api_call() {
     local method=$1
     local endpoint=$2
@@ -35,10 +35,40 @@ api_call() {
     local auth=$4
 
     if [ -n "$auth" ]; then
-        curl -s -X "$method" "$BASE_URL$endpoint" \
+        local response
+        response=$(curl -s -w "\n%{http_code}" -X "$method" "$BASE_URL$endpoint" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $auth" \
-            -d "$data"
+            -d "$data")
+
+        local http_code=$(echo "$response" | tail -n1)
+        local body=$(echo "$response" | sed '$d')
+
+        # Auto-refresh on 401 Unauthorized
+        if [ "$http_code" = "401" ] && [ -f "$CREDENTIALS_FILE" ]; then
+            local refresh_token=$(jq -r '.refresh_token' "$CREDENTIALS_FILE")
+            if [ -n "$refresh_token" ] && [ "$refresh_token" != "null" ]; then
+                local refresh_result=$(curl -s -X POST "$BASE_URL/auth/refresh" \
+                    -H "Content-Type: application/json" \
+                    -d "{\"refresh_token\":\"$refresh_token\"}")
+
+                local new_token=$(echo "$refresh_result" | jq -r '.access_token // empty')
+                if [ -n "$new_token" ]; then
+                    # Update credentials file
+                    jq ".access_token = \"$new_token\"" "$CREDENTIALS_FILE" > "$CREDENTIALS_FILE.tmp" \
+                        && mv "$CREDENTIALS_FILE.tmp" "$CREDENTIALS_FILE"
+                    ACCESS_TOKEN="$new_token"
+
+                    # Retry the call with new token
+                    body=$(curl -s -X "$method" "$BASE_URL$endpoint" \
+                        -H "Content-Type: application/json" \
+                        -H "Authorization: Bearer $new_token" \
+                        -d "$data")
+                fi
+            fi
+        fi
+
+        echo "$body"
     else
         curl -s -X "$method" "$BASE_URL$endpoint" \
             -H "Content-Type: application/json" \
