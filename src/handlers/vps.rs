@@ -218,9 +218,12 @@ pub async fn provision_vps(
 
     match hostinger.create_vps(create_req).await {
         Ok(response) => {
-            // Update with provider instance ID
-            let provider_instance_id = response.id;
-            let provider_order_id = response.subscription_id;
+            // Extract VM info from nested response
+            let (provider_instance_id, provider_order_id) = if let Some(vm) = response.virtual_machine {
+                (Some(vm.id), vm.subscription_id)
+            } else {
+                (None, None)
+            };
 
             sqlx::query(
                 r#"
@@ -230,10 +233,15 @@ pub async fn provision_vps(
                 "#,
             )
             .bind(provider_instance_id)
-            .bind(provider_order_id)
+            .bind(&provider_order_id)
             .bind(vps_id)
             .execute(pool.get_ref())
             .await?;
+
+            tracing::info!(
+                "VPS provisioning started: id={}, hostname={}, provider_id={:?}",
+                vps_id, hostname, provider_instance_id
+            );
 
             Ok(HttpResponse::Accepted().json(ProvisionResponse {
                 id: vps_id,

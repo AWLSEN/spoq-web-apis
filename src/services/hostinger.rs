@@ -84,10 +84,22 @@ pub struct CreatePostInstallScriptRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateVpsResponse {
+    pub order: Option<OrderInfo>,
+    pub virtual_machine: Option<VirtualMachineInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OrderInfo {
     pub id: Option<i64>,
-    pub subscription_id: Option<String>,
-    #[serde(default)]
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VirtualMachineInfo {
+    pub id: i64,
     pub state: String,
+    pub hostname: Option<String>,
+    pub subscription_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

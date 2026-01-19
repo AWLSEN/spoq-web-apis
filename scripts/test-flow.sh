@@ -235,6 +235,28 @@ else
     read -r PROVISION_CHOICE
 
     if [ "$PROVISION_CHOICE" == "y" ] || [ "$PROVISION_CHOICE" == "Y" ]; then
+        # Show available plans
+        echo ""
+        echo -e "${BLUE}Available Plans:${NC}"
+        PLANS=$(api_call GET "/api/vps/plans")
+        echo "$PLANS" | jq -r '.plans[] | "  [\(.id | split("-") | .[2])]: \(.name) - \(.vcpu) vCPU, \(.ram_gb)GB RAM - $\(.monthly_price_cents/100)/mo"'
+        echo ""
+        echo -e "Enter plan (kvm1/kvm2/kvm4/kvm8) [default: kvm1]:"
+        read -r PLAN_CHOICE
+        PLAN_CHOICE=${PLAN_CHOICE:-kvm1}
+        PLAN_ID="hostingercom-vps-${PLAN_CHOICE}-usd-1m"
+
+        # Show available data centers
+        echo ""
+        echo -e "${BLUE}Available Data Centers:${NC}"
+        DCS=$(api_call GET "/api/vps/datacenters")
+        echo "$DCS" | jq -r '.data_centers[] | "  [\(.id)]: \(.city), \(.country)"'
+        echo ""
+        echo -e "Enter data center ID [default: 9 (Phoenix)]:"
+        read -r DC_CHOICE
+        DC_CHOICE=${DC_CHOICE:-9}
+
+        echo ""
         echo -e "Enter SSH password (min 12 chars):"
         read -rs SSH_PASSWORD
         echo ""
@@ -244,8 +266,8 @@ else
             exit 1
         fi
 
-        echo -e "Provisioning VPS..."
-        PROVISION_RESULT=$(api_call POST "/api/vps/provision" "{\"ssh_password\":\"$SSH_PASSWORD\"}" "$ACCESS_TOKEN")
+        echo -e "Provisioning VPS with plan=$PLAN_ID, datacenter=$DC_CHOICE..."
+        PROVISION_RESULT=$(api_call POST "/api/vps/provision" "{\"ssh_password\":\"$SSH_PASSWORD\",\"plan_id\":\"$PLAN_ID\",\"data_center_id\":$DC_CHOICE}" "$ACCESS_TOKEN")
 
         if echo "$PROVISION_RESULT" | jq -e '.id' > /dev/null 2>&1; then
             echo -e "${GREEN}✓ VPS provisioning started!${NC}"
