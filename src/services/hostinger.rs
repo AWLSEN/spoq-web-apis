@@ -511,15 +511,15 @@ echo "Hostname: $HOSTNAME"
 echo "Owner ID: $OWNER_ID"
 
 # 1. System updates
-echo "[1/8] Updating system..."
+echo "[1/10] Updating system..."
 apt-get update && apt-get upgrade -y
 
 # 2. Install dependencies
-echo "[2/8] Installing dependencies..."
+echo "[2/10] Installing dependencies..."
 apt-get install -y curl jq ca-certificates debian-keyring debian-archive-keyring apt-transport-https
 
 # 3. Configure firewall
-echo "[3/8] Configuring firewall..."
+echo "[3/10] Configuring firewall..."
 ufw allow 22/tcp   # SSH
 ufw allow 80/tcp   # HTTP (Let's Encrypt)
 ufw allow 443/tcp  # HTTPS
@@ -527,13 +527,13 @@ ufw allow 8080/tcp # Conductor direct (for testing)
 ufw --force enable
 
 # 4. Install Caddy
-echo "[4/8] Installing Caddy..."
+echo "[4/10] Installing Caddy..."
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
 apt-get update && apt-get install -y caddy
 
 # 5. Configure Caddy
-echo "[5/8] Configuring Caddy..."
+echo "[5/10] Configuring Caddy..."
 cat > /etc/caddy/Caddyfile << EOF
 $HOSTNAME {{
     reverse_proxy localhost:8080
@@ -543,7 +543,7 @@ systemctl enable caddy
 systemctl restart caddy || true  # May fail if DNS not ready
 
 # 6. Create Conductor systemd service (env vars for config)
-echo "[6/8] Setting up Conductor service..."
+echo "[6/10] Setting up Conductor service..."
 cat > /etc/systemd/system/conductor.service << SERVICEEOF
 [Unit]
 Description=Spoq Conductor - AI Backend Service
@@ -564,10 +564,18 @@ WantedBy=multi-user.target
 SERVICEEOF
 systemctl daemon-reload
 systemctl enable conductor
-# Don't start yet - binary not installed
 
-# 7. Create VPS marker file
-echo "[7/8] Creating VPS marker..."
+# 7. Download and install Conductor
+echo "[7/10] Installing Conductor..."
+curl -fsSL https://download.spoq.dev/conductor | bash
+systemctl start conductor
+
+# 8. Download and install Spoq CLI
+echo "[8/10] Installing Spoq CLI..."
+curl -fsSL https://download.spoq.dev/cli | bash
+
+# 9. Create VPS marker file
+echo "[9/10] Creating VPS marker..."
 mkdir -p /etc/spoq
 cat > /etc/spoq/vps.marker << EOF
 {{
@@ -578,8 +586,8 @@ cat > /etc/spoq/vps.marker << EOF
 }}
 EOF
 
-# 8. Setup welcome message
-echo "[8/8] Setting up welcome message..."
+# 10. Setup welcome message
+echo "[10/10] Setting up welcome message..."
 cat >> /root/.bashrc << 'BASHRC'
 
 echo ""

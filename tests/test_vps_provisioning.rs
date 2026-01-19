@@ -261,6 +261,34 @@ fn test_post_install_script_welcome_message() {
     );
 }
 
+/// Test that post-install script downloads Conductor and CLI binaries
+#[test]
+fn test_post_install_script_downloads_binaries() {
+    let script = generate_post_install_script(
+        "user-uuid",
+        "jwt-secret",
+        "download.spoq.dev",
+    );
+
+    // Verify Conductor download
+    assert!(
+        script.contains("https://download.spoq.dev/conductor"),
+        "Script should download Conductor binary"
+    );
+
+    // Verify CLI download
+    assert!(
+        script.contains("https://download.spoq.dev/cli"),
+        "Script should download CLI binary"
+    );
+
+    // Verify curl commands are present
+    assert!(
+        script.contains("curl -fsSL"),
+        "Script should use curl to download"
+    );
+}
+
 // ============================================================================
 // Mock-based tests for VPS provisioning flow
 // ============================================================================
