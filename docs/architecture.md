@@ -40,72 +40,23 @@ Spoq is a CLI tool (like Claude Code) that runs on the user's local machine and 
 
 ## User Flows
 
-### 1. Signup Flow (Web)
+### 1. Install & Signup Flow (CLI-Only)
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  STEP 1: Subscribe                                               │
+│  STEP 1: Install CLI                                             │
 ├──────────────────────────────────────────────────────────────────┤
-│  → User visits spoq.dev                                          │
-│  → Clicks "Subscribe"                                            │
-│  → Pays via Stripe                                               │
+│                                                                  │
+│  $ curl -fsSL https://spoq.dev/install.sh | bash                 │
+│                                                                  │
+│  ✓ Spoq installed!                                               │
+│  Run 'spoq init' to get started.                                 │
+│                                                                  │
 └──────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│  STEP 2: Identity Verification                                   │
-├──────────────────────────────────────────────────────────────────┤
-│  → "Sign in with GitHub" (standard web OAuth)                    │
-│  → Links payment to GitHub identity                              │
-└──────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  STEP 3: Create SSH Password                                     │
-├──────────────────────────────────────────────────────────────────┤
-│  → User creates their own password (they'll remember it)         │
-│  → Used for mobile/Termius SSH access                            │
-│  → Requirements: 12+ chars, 1 number, 1 special                  │
-└──────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  STEP 4: VPS Provisioning                                        │
-├──────────────────────────────────────────────────────────────────┤
-│  → "Setting up your environment..."                              │
-│  → Backend provisions VPS on Contabo/Hostinger                   │
-│  → Configures SSH with user's password                           │
-│  → Installs Spoq backend API                                     │
-│  → Assigns hostname (alice.spoq.dev)                             │
-└──────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  STEP 5: Show Credentials                                        │
-├──────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  "Your environment is ready!"                                    │
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐  │
-│  │ Desktop:                                                   │  │
-│  │ curl -sSL https://spoq.dev/install.sh | bash               │  │
-│  └────────────────────────────────────────────────────────────┘  │
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐  │
-│  │ Mobile (Termius):                                          │  │
-│  │ Host: alice.spoq.dev                                       │  │
-│  │ Username: spoq                                             │  │
-│  │ Password: (what you just created)                          │  │
-│  └────────────────────────────────────────────────────────────┘  │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-### 2. Desktop CLI Flow
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  FIRST RUN: spoq init                                            │
+│  STEP 2: Initialize & Authenticate                               │
 ├──────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  $ spoq init                                                     │
@@ -113,15 +64,63 @@ Spoq is a CLI tool (like Claude Code) that runs on the user's local machine and 
 │  Visit this URL to authenticate:                                 │
 │  https://spoq.dev/auth/verify?code=BLUE-FISH-TREE                │
 │                                                                  │
-│  Waiting... ✓ Authenticated!                                     │
-│                                                                  │
-│  Your VPS: alice.spoq.dev                                        │
-│  Ready to use!                                                   │
-│                                                                  │
-│  Token saved to ~/.spoq/credentials                              │
+│  Waiting... ✓ Authenticated as @username!                        │
 │                                                                  │
 └──────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  STEP 3: Create SSH Password (New Users Only)                    │
+├──────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  No VPS found. Let's set one up!                                 │
+│                                                                  │
+│  Create SSH password (for mobile access):                        │
+│  Password: ************                                          │
+│  Confirm:  ************                                          │
+│                                                                  │
+│  (Requirements: 12+ chars)                                       │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  STEP 4: VPS Provisioning                                        │
+├──────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Setting up your environment...                                  │
+│  ████████████████████░░░░░░░░░░ 60%                              │
+│                                                                  │
+│  → Provisioning VPS...                                           │
+│  → Installing Conductor...                                       │
+│  → Configuring services...                                       │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  STEP 5: Ready!                                                  │
+├──────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ✓ Your environment is ready!                                    │
+│                                                                  │
+│  VPS: username.spoq.dev (89.116.49.69)                           │
+│                                                                  │
+│  Mobile/SSH access:                                              │
+│    ssh root@89.116.49.69                                         │
+│    Password: (what you just created)                             │
+│                                                                  │
+│  Start using Spoq:                                               │
+│    spoq ask "help me with this code"                             │
+│                                                                  │
+│  Credentials saved to ~/.spoq/credentials                        │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
 
+### 2. Daily Use (CLI)
+
+```
 ┌──────────────────────────────────────────────────────────────────┐
 │  DAILY USE                                                       │
 ├──────────────────────────────────────────────────────────────────┤
@@ -129,9 +128,9 @@ Spoq is a CLI tool (like Claude Code) that runs on the user's local machine and 
 │  $ spoq ask "explain this function"                              │
 │                                                                  │
 │  → CLI reads local files for context                             │
-│  → Sends request to alice.spoq.dev/api/ask                       │
+│  → Sends request to VPS (http://IP:8080 or https://hostname)     │
 │  → Authorization: Bearer <jwt_token>                             │
-│  → VPS orchestrates AI response                                  │
+│  → Conductor orchestrates AI response                            │
 │  → Response displayed locally                                    │
 │                                                                  │
 └──────────────────────────────────────────────────────────────────┘
@@ -721,29 +720,13 @@ chown spoq:spoq /home/spoq/.bashrc
 **On Mac (user runs install script):**
 
 ```bash
-# install.sh - downloaded via: curl -sSL https://spoq.dev/install.sh | bash
+# Same as Claude Code pattern
+curl -fsSL https://spoq.dev/install.sh | bash
 
-#!/bin/bash
-set -e
-
-# Detect OS/arch
-OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-ARCH=$(uname -m)
-case $ARCH in
-    x86_64) ARCH="amd64" ;;
-    arm64|aarch64) ARCH="arm64" ;;
-esac
-
-# Download binary
-curl -sSL "https://spoq.dev/releases/spoq-${OS}-${ARCH}" -o /usr/local/bin/spoq
-chmod +x /usr/local/bin/spoq
-
-# Create config directory
-mkdir -p ~/.spoq
-
-echo "✓ Spoq installed!"
-echo ""
-echo "Run 'spoq init' to authenticate."
+# Binaries hosted at:
+# https://spoq.dev/releases/spoq-darwin-arm64
+# https://spoq.dev/releases/spoq-darwin-amd64
+# https://spoq.dev/releases/spoq-linux-amd64
 ```
 
 ### Complete VPS Provisioning Script
@@ -810,12 +793,22 @@ systemctl daemon-reload
 systemctl enable conductor
 systemctl start conductor
 
-# 5. Install Spoq CLI/TUI
+# 5. Install Spoq CLI/TUI (same URL as user install)
 echo "Installing Spoq CLI..."
-curl -sSL https://spoq.dev/releases/spoq-linux-amd64 -o /usr/local/bin/spoq
+curl -fsSL https://spoq.dev/releases/spoq-linux-amd64 -o /usr/local/bin/spoq
 chmod +x /usr/local/bin/spoq
 
-# 6. Setup welcome message
+# 6. Create VPS marker file (so CLI knows it's on VPS, uses localhost)
+mkdir -p /etc/spoq
+cat > /etc/spoq/vps.marker << 'EOF'
+{
+  "vps": true,
+  "conductor": "http://localhost:8080",
+  "version": "1.0"
+}
+EOF
+
+# 7. Setup welcome message
 cat > /home/spoq/.bashrc << 'BASHRC'
 export PATH="/usr/local/bin:$PATH"
 
@@ -834,18 +827,19 @@ BASHRC
 
 chown spoq:spoq /home/spoq/.bashrc
 
-# 7. Firewall
+# 8. Firewall
 ufw allow 22    # SSH
 ufw allow 443   # HTTPS (conductor API)
+ufw allow 8080  # Conductor direct (for testing without Caddy)
 ufw --force enable
 
-# 8. Install Caddy (reverse proxy + auto SSL)
+# 9. Install Caddy (reverse proxy + auto SSL) - OPTIONAL for MVP
 apt-get install -y debian-keyring debian-archive-keyring apt-transport-https
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
 apt-get update && apt-get install -y caddy
 
-# 9. Configure Caddy reverse proxy
+# 10. Configure Caddy reverse proxy (requires DNS to be set up)
 cat > /etc/caddy/Caddyfile << EOF
 $HOSTNAME {
     reverse_proxy localhost:8080
@@ -1547,75 +1541,9 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 ---
 
-## Web Frontend
+## No Web Frontend
 
-All-in-one with Rust backend using Askama templates.
-
-### Stack: Askama (Jinja-like templates in Rust)
-
-```
-spoq-web-apis/
-├── src/
-│   ├── handlers/
-│   │   ├── auth.rs          # OAuth endpoints
-│   │   ├── api.rs           # API endpoints
-│   │   └── pages.rs         # HTML page handlers
-│   └── templates/
-│       ├── base.html        # Base layout
-│       ├── signup.html
-│       ├── password.html
-│       ├── complete.html
-│       └── dashboard.html
-```
-
-**Why Askama (not separate frontend):**
-- Single project, single deploy
-- No CORS issues
-- No JS build step
-- Simple flows don't need SPA
-- Can always extract later if needed
-
-### Page Handlers
-
-```rust
-use askama::Template;
-
-#[derive(Template)]
-#[template(path = "signup.html")]
-struct SignupPage {}
-
-#[derive(Template)]
-#[template(path = "complete.html")]
-struct CompletePage {
-    hostname: String,
-    install_command: String,
-    ssh_password: String,
-}
-
-async fn signup_page() -> impl Responder {
-    SignupPage {}.render().unwrap()
-}
-
-async fn complete_page(user: AuthenticatedUser, db: web::Data<PgPool>) -> impl Responder {
-    let vps = get_user_vps(&db, user.id).await.unwrap();
-    let token = generate_download_token(&user.id);
-
-    CompletePage {
-        hostname: vps.hostname,
-        install_command: format!("curl -sSL 'https://spoq.dev/install?token={}' | bash", token),
-        ssh_password: "(your password)", // Don't show actual password, user knows it
-    }.render().unwrap()
-}
-```
-
-### Key Pages
-
-**1. `/signup`** - GitHub OAuth button
-**2. `/setup/password`** - Create SSH password form
-**3. `/setup/complete`** - Show install command + SSH info
-**4. `/dashboard`** - VPS status, connection info
-
-### Deployment: Railway Only
+Everything is CLI-only. No web pages needed.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -1624,20 +1552,19 @@ async fn complete_page(user: AuthenticatedUser, db: web::Data<PgPool>) -> impl R
 │                                                                 │
 │  spoq.dev                                                       │
 │  └── spoq-web-apis (Rust/Actix)                                 │
-│      ├── /                 ← Landing page                       │
-│      ├── /signup           ← Signup page                        │
-│      ├── /setup/*          ← Setup flow                         │
-│      ├── /dashboard        ← User dashboard                     │
-│      ├── /auth/*           ← OAuth endpoints                    │
-│      ├── /api/*            ← API endpoints                      │
-│      └── /releases/*       ← Binary downloads                   │
+│      ├── /health           ← Health check                       │
+│      ├── /auth/*           ← OAuth + device flow endpoints      │
+│      ├── /api/vps/*        ← VPS management endpoints           │
+│      └── /releases/*       ← Binary downloads (CLI public)      │
 │                                                                 │
 │  PostgreSQL                ← Database                           │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-Single deploy. Single domain. No CORS.
+The CLI handles everything:
+- `spoq init` → Device flow auth → If new user, prompt for password → Provision VPS
+- No signup pages, no dashboard, no web UI
 
 ---
 
@@ -1645,14 +1572,14 @@ Single deploy. Single domain. No CORS.
 
 | Component | Technology | Purpose |
 |-----------|------------|---------|
-| Backend + Frontend | Rust/Actix + Askama | Auth, pages, API, binary downloads |
+| Central Backend | Rust/Actix | Auth APIs, VPS provisioning, binary downloads |
 | Database | PostgreSQL (Railway) | Users, subscriptions, VPS records |
 | User VPS | Ubuntu + Conductor | AI execution environment |
-| CLI | Rust | Local interface, file context |
+| CLI/TUI | Rust | Local interface, signup, everything |
 | Payments | Stripe | Subscription management (last) |
-| VPS Provider | Contabo/Hostinger | Infrastructure |
-| Hosting | Railway | Everything (backend, DB, binaries) |
-| DNS | Cloudflare | *.spoq.dev routing |
+| VPS Provider | Hostinger | Infrastructure |
+| Hosting | Railway | Backend + DB |
+| DNS | Cloudflare | *.spoq.dev routing (optional for MVP) |
 
 ## External Dependencies
 
@@ -1676,10 +1603,11 @@ Single deploy. Single domain. No CORS.
 | Service | Why Not |
 |---------|---------|
 | ~~AWS S3 / R2~~ | Binaries in Docker image |
-| ~~Vercel / Pages~~ | Askama templates in Rust |
+| ~~Vercel / Pages~~ | No web frontend - CLI only |
 | ~~Auth0~~ | GitHub OAuth built-in |
 | ~~Redis~~ | PostgreSQL sufficient |
-| ~~SendGrid~~ | No email (show on web) |
+| ~~SendGrid~~ | No email - CLI shows everything |
+| ~~Askama / React~~ | No web UI - CLI only |
 
 ---
 
@@ -1690,35 +1618,35 @@ Single deploy. Single domain. No CORS.
 │                         RAILWAY                                 │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│  spoq.dev (Rust/Actix + Askama)                                 │
-│  ├── HTML Pages (signup, dashboard, etc.)                       │
-│  ├── OAuth + Auth APIs                                          │
-│  ├── VPS Provisioning APIs                                      │
-│  ├── Binary Downloads (/releases/*)                             │
-│  └── Version Check (/releases/version)                          │
+│  spoq.dev (Rust/Actix) - API Only, No Web UI                    │
+│  ├── /auth/*           OAuth + Device flow                      │
+│  ├── /api/vps/*        VPS provisioning & management            │
+│  └── /releases/*       CLI binary downloads (public)            │
 │                                                                 │
 │  PostgreSQL                                                     │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
           │                              │
-          │ Provision VPS                │ Download binaries
+          │ Provision VPS                │ CLI install
           ▼                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│              USER'S VPS (Contabo/Hostinger)                     │
+│              USER'S VPS (Hostinger)                             │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│  alice.spoq.dev                                                 │
-│  ├── Conductor (systemd, auto-updates every 6h)                 │
-│  ├── Spoq CLI (for SSH users, `spoq update` command)            │
-│  └── Caddy (reverse proxy, auto SSL)                            │
+│  IP: 89.116.49.69 (DNS optional)                                │
+│  ├── Conductor (systemd, port 8080)                             │
+│  ├── Spoq CLI (for SSH users)                                   │
+│  ├── /etc/spoq/vps.marker (VPS detection)                       │
+│  └── Caddy (optional, for HTTPS)                                │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
           ▲                              ▲
-          │ HTTPS + JWT                  │ SSH (password)
+          │ HTTP:8080 + JWT              │ SSH (password)
+          │ (or HTTPS with Caddy)        │
           │                              │
 ┌─────────────────────┐    ┌─────────────────────────────────────┐
 │  Desktop CLI (Mac)  │    │  Mobile (Termius)                   │
-│  spoq ask "..."     │    │  ssh spoq@alice.spoq.dev            │
+│  spoq ask "..."     │    │  ssh root@89.116.49.69              │
 └─────────────────────┘    └─────────────────────────────────────┘
 ```
 
@@ -1726,19 +1654,32 @@ Single deploy. Single domain. No CORS.
 
 ## Focus: MVP Checklist
 
-**Build in this order:**
+**Done:**
 
-1. ☐ Database migrations (subscriptions, user_vps)
-2. ☐ HTML pages (Askama: signup, password, complete, dashboard)
-3. ☐ VPS provisioning API (Hostinger or Contabo)
-4. ☐ DNS automation (Cloudflare API for *.spoq.dev)
-5. ☐ Binary download endpoint (/releases/*)
-6. ☐ Auto-update endpoint (/releases/version)
-7. ☐ Cancel/resume flow
-8. ☐ Stripe integration (last)
+1. ✅ Database migrations (users, refresh_tokens, device_grants, user_vps)
+2. ✅ GitHub OAuth (web + device flow)
+3. ✅ JWT token management (access + refresh)
+4. ✅ Device flow endpoints (init, verify, authorize, token)
+5. ✅ VPS provisioning API (Hostinger)
+6. ✅ VPS management (status, start, stop, restart, reset-password)
+7. ✅ CLI/TUI + install script (`curl -fsSL https://spoq.dev/install.sh | bash`)
+
+**In Progress:**
+
+8. 🔨 Conductor (building) - JWT validation, AI orchestration
+9. ⏳ Test JWT flow via IP (needs Conductor)
+
+**Pending:**
+
+10. ☐ Full post-install script (Conductor + CLI + marker file + systemd)
+11. ☐ DNS automation (Cloudflare - optional for MVP, can use IP)
+12. ☐ Caddy reverse proxy (optional for MVP, can use IP:8080)
+13. ☐ subscriptions table migration
+14. ☐ Stripe integration (last)
 
 **Not MVP (later):**
 - VPS upgrades
 - BYOVPS
 - Multiple VPS providers
 - RS256 JWT upgrade
+- Auto-update system
