@@ -18,7 +18,7 @@ use spoq_web_apis::handlers::{
     start_vps, stop_vps,
 };
 use spoq_web_apis::middleware::create_rate_limiter;
-use spoq_web_apis::services::HostingerClient;
+use spoq_web_apis::services::{CloudflareService, HostingerClient};
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -70,6 +70,21 @@ async fn main() -> std::io::Result<()> {
         web::Data::new(HostingerClient::new(key.clone()))
     });
 
+    // Create Cloudflare client if API token and zone ID are configured
+    let cloudflare_client = match (&config.cloudflare_api_token, &config.cloudflare_zone_id) {
+        (Some(token), Some(zone_id)) => {
+            tracing::info!("Cloudflare DNS client configured");
+            Some(web::Data::new(CloudflareService::new(
+                token.clone(),
+                zone_id.clone(),
+            )))
+        }
+        _ => {
+            tracing::warn!("Cloudflare DNS not configured - DNS records won't be created");
+            None
+        }
+    };
+
     // Wrap pool and config for VPS handlers
     let db_pool = web::Data::new(pool);
     let app_config = web::Data::new(config);
@@ -107,6 +122,11 @@ async fn main() -> std::io::Result<()> {
                     .route("/authorize", web::post().to(device_authorize))
                     .route("/device/token", web::post().to(device_token)),
             );
+
+        // Add Cloudflare client if configured
+        if let Some(ref cloudflare) = cloudflare_client {
+            app = app.app_data(cloudflare.clone());
+        }
 
         // Add VPS routes if Hostinger is configured
         if let Some(ref hostinger) = hostinger_client {

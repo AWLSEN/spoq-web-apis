@@ -759,31 +759,21 @@ echo "Installing Conductor..."
 curl -sSL https://spoq.dev/releases/conductor-linux-amd64 -o /usr/local/bin/conductor
 chmod +x /usr/local/bin/conductor
 
-mkdir -p /etc/conductor
-cat > /etc/conductor/config.toml << EOF
-[server]
-host = "0.0.0.0"
-port = 8080
-
-[auth]
-owner_id = "$OWNER_ID"
-jwt_secret = "$JWT_SECRET"
-EOF
-
-# 4. Install Conductor systemd service
-cat > /etc/systemd/system/conductor.service << 'EOF'
+# 4. Install Conductor systemd service (config via env vars)
+cat > /etc/systemd/system/conductor.service << EOF
 [Unit]
 Description=Spoq Conductor - AI Backend Service
 After=network.target
 
 [Service]
 Type=simple
-User=spoq
-Group=spoq
-ExecStart=/usr/local/bin/conductor --config /etc/conductor/config.toml
+User=root
+ExecStart=/usr/local/bin/conductor
 Restart=always
 RestartSec=5
 Environment="RUST_LOG=info"
+Environment="CONDUCTOR_AUTH__JWT_SECRET=$JWT_SECRET"
+Environment="CONDUCTOR_AUTH__OWNER_ID=$OWNER_ID"
 
 [Install]
 WantedBy=multi-user.target

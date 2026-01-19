@@ -485,147 +485,130 @@ impl HostingerClient {
 }
 
 /// Generate the post-install script content for VPS provisioning
+/// Note: SSH password is set by Hostinger API, not needed in script
 pub fn generate_post_install_script(
-    ssh_password: &str,
     owner_id: &str,
     jwt_secret: &str,
     hostname: &str,
-    conductor_url: &str,
-    cli_url: &str,
 ) -> String {
     format!(
         r#"#!/bin/bash
 # Spoq VPS Provisioning Script
 # Executed automatically by Hostinger after VPS creation
-# Output logged to /post_install.log
+# Log: /var/log/spoq-setup.log
 
 set -e
+exec > /var/log/spoq-setup.log 2>&1
 
-# Variables
-SSH_PASSWORD="{ssh_password}"
+# Variables injected during provisioning
 OWNER_ID="{owner_id}"
 JWT_SECRET="{jwt_secret}"
 HOSTNAME="{hostname}"
-CONDUCTOR_URL="{conductor_url}"
-CLI_URL="{cli_url}"
 
 echo "=== Spoq VPS Provisioning ==="
+echo "Date: $(date)"
+echo "Hostname: $HOSTNAME"
+echo "Owner ID: $OWNER_ID"
 
 # 1. System updates
+echo "[1/8] Updating system..."
 apt-get update && apt-get upgrade -y
 
 # 2. Install dependencies
-apt-get install -y curl jq ca-certificates
+echo "[2/8] Installing dependencies..."
+apt-get install -y curl jq ca-certificates debian-keyring debian-archive-keyring apt-transport-https
 
-# 3. Create spoq user
-useradd -m -s /bin/bash spoq
-echo "spoq:$SSH_PASSWORD" | chpasswd
-usermod -aG sudo spoq
-echo "spoq ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/spoq
+# 3. Configure firewall
+echo "[3/8] Configuring firewall..."
+ufw allow 22/tcp   # SSH
+ufw allow 80/tcp   # HTTP (Let's Encrypt)
+ufw allow 443/tcp  # HTTPS
+ufw allow 8080/tcp # Conductor direct (for testing)
+ufw --force enable
 
-# 4. Download and install Conductor
-curl -sSL "$CONDUCTOR_URL" -o /usr/local/bin/conductor
-chmod +x /usr/local/bin/conductor
+# 4. Install Caddy
+echo "[4/8] Installing Caddy..."
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
+apt-get update && apt-get install -y caddy
 
-# 5. Configure Conductor
-mkdir -p /etc/conductor
-cat > /etc/conductor/config.toml << EOF
-[server]
-host = "0.0.0.0"
-port = 8080
-
-[auth]
-owner_id = "$OWNER_ID"
-jwt_secret = "$JWT_SECRET"
-EOF
-
-# 6. Create VPS marker file
-mkdir -p /etc/spoq
-cat > /etc/spoq/vps.marker << EOF
-{{
-  "vps": true,
-  "conductor": "http://localhost:8080",
-  "version": "1.0"
+# 5. Configure Caddy
+echo "[5/8] Configuring Caddy..."
+cat > /etc/caddy/Caddyfile << EOF
+$HOSTNAME {{
+    reverse_proxy localhost:8080
 }}
 EOF
+systemctl enable caddy
+systemctl restart caddy || true  # May fail if DNS not ready
 
-# 7. Create Conductor systemd service
-cat > /etc/systemd/system/conductor.service << 'SERVICEEOF'
+# 6. Create Conductor systemd service (env vars for config)
+echo "[6/8] Setting up Conductor service..."
+cat > /etc/systemd/system/conductor.service << SERVICEEOF
 [Unit]
 Description=Spoq Conductor - AI Backend Service
 After=network.target
 
 [Service]
 Type=simple
-User=spoq
-Group=spoq
-ExecStart=/usr/local/bin/conductor --config /etc/conductor/config.toml
+User=root
+ExecStart=/usr/local/bin/conductor
 Restart=always
 RestartSec=5
 Environment="RUST_LOG=info"
+Environment="CONDUCTOR_AUTH__JWT_SECRET=$JWT_SECRET"
+Environment="CONDUCTOR_AUTH__OWNER_ID=$OWNER_ID"
 
 [Install]
 WantedBy=multi-user.target
 SERVICEEOF
-
 systemctl daemon-reload
 systemctl enable conductor
-systemctl start conductor
+# Don't start yet - binary not installed
 
-# 8. Download and install Spoq CLI
-curl -sSL "$CLI_URL" -o /usr/local/bin/spoq
-chmod +x /usr/local/bin/spoq
+# 7. Create VPS marker file
+echo "[7/8] Creating VPS marker..."
+mkdir -p /etc/spoq
+cat > /etc/spoq/vps.marker << EOF
+{{
+  "vps": true,
+  "conductor": "http://localhost:8080",
+  "hostname": "$HOSTNAME",
+  "version": "1.0"
+}}
+EOF
 
-# 9. Setup welcome message
-cat > /home/spoq/.bashrc << 'BASHRC'
-export PATH="/usr/local/bin:$PATH"
+# 8. Setup welcome message
+echo "[8/8] Setting up welcome message..."
+cat >> /root/.bashrc << 'BASHRC'
 
 echo ""
 echo "╔═══════════════════════════════════════════════════════════╗"
 echo "║                    Welcome to Spoq!                       ║"
 echo "║                                                           ║"
-echo "║  Commands:                                                ║"
-echo "║    spoq ask \"your question\"  - Ask AI anything            ║"
-echo "║    spoq run                  - Run a task                 ║"
-echo "║    spoq help                 - Show all commands          ║"
+echo "║  Your VPS: HOSTNAME_PLACEHOLDER                           ║"
+echo "║                                                           ║"
+echo "║  Services:                                                ║"
+echo "║    Conductor: systemctl status conductor                  ║"
+echo "║    Caddy:     systemctl status caddy                      ║"
+echo "║                                                           ║"
+echo "║  Logs:                                                    ║"
+echo "║    Setup:     cat /var/log/spoq-setup.log                 ║"
+echo "║    Conductor: journalctl -u conductor -f                  ║"
 echo "║                                                           ║"
 echo "╚═══════════════════════════════════════════════════════════╝"
 echo ""
 BASHRC
-chown spoq:spoq /home/spoq/.bashrc
+sed -i "s/HOSTNAME_PLACEHOLDER/$HOSTNAME/" /root/.bashrc
 
-# 10. Configure firewall
-ufw allow 22    # SSH
-ufw allow 80    # HTTP (for Let's Encrypt verification)
-ufw allow 443   # HTTPS
-ufw --force enable
-
-# 11. Install Caddy
-apt-get install -y debian-keyring debian-archive-keyring apt-transport-https
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
-apt-get update && apt-get install -y caddy
-
-# 12. Configure Caddy
-cat > /etc/caddy/Caddyfile << EOF
-$HOSTNAME {{
-    reverse_proxy localhost:8080
-}}
-EOF
-
-systemctl enable caddy
-systemctl restart caddy
-
-echo "=== Provisioning Complete ==="
-echo "Conductor: $(systemctl is-active conductor)"
-echo "Caddy: $(systemctl is-active caddy)"
+echo "=== Spoq VPS Provisioning Complete ==="
+echo "Finished: $(date)"
+echo "Caddy: $(systemctl is-active caddy || echo 'waiting for DNS')"
+echo "Conductor: enabled (waiting for binary)"
 "#,
-        ssh_password = ssh_password,
         owner_id = owner_id,
         jwt_secret = jwt_secret,
         hostname = hostname,
-        conductor_url = conductor_url,
-        cli_url = cli_url,
     )
 }
 
@@ -636,17 +619,16 @@ mod tests {
     #[test]
     fn test_generate_post_install_script() {
         let script = generate_post_install_script(
-            "TestPassword123!",
             "user-uuid-123",
             "jwt-secret-456",
             "test.spoq.dev",
-            "https://spoq.dev/releases/conductor",
-            "https://spoq.dev/releases/spoq-cli",
         );
 
-        assert!(script.contains("TestPassword123!"));
         assert!(script.contains("user-uuid-123"));
+        assert!(script.contains("jwt-secret-456"));
         assert!(script.contains("test.spoq.dev"));
+        assert!(script.contains("CONDUCTOR_AUTH__JWT_SECRET"));
+        assert!(script.contains("CONDUCTOR_AUTH__OWNER_ID"));
         assert!(script.contains("systemctl enable conductor"));
         assert!(script.contains("systemctl enable caddy"));
     }

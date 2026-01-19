@@ -94,6 +94,7 @@ pub struct UserVps {
     pub ssh_username: String,
     pub ssh_password_hash: String,
     pub jwt_secret: String,
+    pub dns_record_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub ready_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
@@ -117,6 +118,10 @@ impl UserVps {
             self.status.as_str(),
             "pending" | "provisioning" | "configuring" | "ready"
         )
+    }
+
+    pub fn has_dns_record(&self) -> bool {
+        self.dns_record_id.is_some()
     }
 }
 

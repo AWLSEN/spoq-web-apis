@@ -19,6 +19,9 @@ pub struct Config {
     pub default_vps_datacenter: i32,
     // Base URL for the API (used for binary downloads, etc.)
     pub base_url: String,
+    // Cloudflare DNS settings
+    pub cloudflare_api_token: Option<String>,
+    pub cloudflare_zone_id: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -118,6 +121,10 @@ impl Config {
         let base_url =
             env::var("BASE_URL").unwrap_or_else(|_| format!("http://{}:{}", host, port));
 
+        // Cloudflare DNS settings (optional for local development)
+        let cloudflare_api_token = env::var("CLOUDFLARE_API_TOKEN").ok();
+        let cloudflare_zone_id = env::var("CLOUDFLARE_ZONE_ID").ok();
+
         Ok(Config {
             database_url,
             github_client_id,
@@ -133,6 +140,8 @@ impl Config {
             default_vps_template,
             default_vps_datacenter,
             base_url,
+            cloudflare_api_token,
+            cloudflare_zone_id,
         })
     }
 

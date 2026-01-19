@@ -22,7 +22,8 @@ use crate::config::Config;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthenticatedUser;
 use crate::models::{ProvisionVpsRequest, UserVps, VpsDataCenter, VpsPlan, VpsStatusResponse};
-use crate::services::hostinger::{CreateVpsRequest, HostingerClient, VpsSetup};
+use crate::services::cloudflare::CloudflareService;
+use crate::services::hostinger::{generate_post_install_script, CreateVpsRequest, HostingerClient, VpsSetup};
 
 /// Response for listing VPS plans
 #[derive(Debug, Serialize)]
@@ -50,6 +51,57 @@ pub struct ProvisionResponse {
 pub struct SuccessResponse {
     pub success: bool,
     pub message: String,
+}
+
+/// Create DNS record for VPS if not already created
+async fn ensure_dns_record(
+    vps: &UserVps,
+    cloudflare: &CloudflareService,
+    pool: &PgPool,
+) -> Result<(), AppError> {
+    // Skip if DNS already created
+    if vps.dns_record_id.is_some() {
+        return Ok(());
+    }
+
+    // Skip if no IP address
+    let ip = match &vps.ip_address {
+        Some(ip) => ip,
+        None => return Ok(()),
+    };
+
+    // Extract subdomain from hostname (e.g., "alice" from "alice.spoq.dev")
+    let subdomain = vps.hostname.trim_end_matches(".spoq.dev");
+
+    tracing::info!(
+        "Creating/updating DNS record: {}.spoq.dev -> {}",
+        subdomain,
+        ip
+    );
+
+    // Use update_dns_record which handles both create and update (idempotent)
+    match cloudflare.update_dns_record(subdomain, ip).await {
+        Ok(record) => {
+            // Update VPS with DNS record ID
+            sqlx::query("UPDATE user_vps SET dns_record_id = $1 WHERE id = $2")
+                .bind(&record.id)
+                .bind(vps.id)
+                .execute(pool)
+                .await?;
+
+            tracing::info!(
+                "DNS record created: {} (id: {})",
+                record.name,
+                record.id
+            );
+            Ok(())
+        }
+        Err(e) => {
+            // Log error but don't fail the status check
+            tracing::error!("Failed to create DNS record for {}: {}", vps.hostname, e);
+            Ok(())
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +230,7 @@ pub async fn provision_vps(
         INSERT INTO user_vps (
             id, user_id, provider, plan_id, template_id, data_center_id,
             hostname, status, ssh_username, ssh_password_hash, jwt_secret
-        ) VALUES ($1, $2, 'hostinger', $3, $4, $5, $6, 'pending', 'spoq', $7, $8)
+        ) VALUES ($1, $2, 'hostinger', $3, $4, $5, $6, 'pending', 'root', $7, $8)
         "#,
     )
     .bind(vps_id)
@@ -193,12 +245,30 @@ pub async fn provision_vps(
     .await?;
 
     // Create VPS on Hostinger
-    // For now, we'll just update status to provisioning
-    // In production, this would be done in a background job
     sqlx::query("UPDATE user_vps SET status = 'provisioning' WHERE id = $1")
         .bind(vps_id)
         .execute(pool.get_ref())
         .await?;
+
+    // Generate dynamic post-install script with user-specific config
+    let script_content = generate_post_install_script(
+        &user.user_id.to_string(),
+        &jwt_secret,
+        &hostname,
+    );
+
+    // Create the script on Hostinger
+    let script_name = format!("spoq-setup-{}", &user.user_id.to_string()[..8]);
+    let script = hostinger
+        .create_post_install_script(&script_name, &script_content)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to create post-install script: {}", e)))?;
+
+    tracing::info!(
+        "Created post-install script: {} (id: {})",
+        script_name,
+        script.id
+    );
 
     // Create VPS via Hostinger API
     let create_req = CreateVpsRequest {
@@ -209,7 +279,7 @@ pub async fn provision_vps(
             data_center_id,
             hostname: Some(hostname.clone()),
             password: Some(req.ssh_password.clone()),
-            post_install_script_id: Some(2397), // spoq-minimal-setup script
+            post_install_script_id: Some(script.id), // Dynamic script with user config
             enable_backups: Some(true),
             public_key: None,
         },
@@ -277,6 +347,7 @@ pub async fn get_vps_status(
     user: AuthenticatedUser,
     pool: web::Data<PgPool>,
     hostinger: web::Data<HostingerClient>,
+    cloudflare: Option<web::Data<CloudflareService>>,
 ) -> AppResult<HttpResponse> {
     let vps: Option<UserVps> = sqlx::query_as(
         "SELECT * FROM user_vps WHERE user_id = $1 AND status != 'terminated' ORDER BY created_at DESC LIMIT 1",
@@ -318,6 +389,18 @@ pub async fn get_vps_status(
                                 .bind(vps.id)
                                 .fetch_one(pool.get_ref())
                                 .await?;
+
+                            // Create DNS record if VPS is ready with IP
+                            if new_status == "ready" && ip_address.is_some() {
+                                if let Some(ref cf) = cloudflare {
+                                    let _ = ensure_dns_record(&vps, cf.get_ref(), pool.get_ref()).await;
+                                    // Reload to get updated dns_record_id
+                                    vps = sqlx::query_as("SELECT * FROM user_vps WHERE id = $1")
+                                        .bind(vps.id)
+                                        .fetch_one(pool.get_ref())
+                                        .await?;
+                                }
+                            }
                             break;
                         }
                     }
@@ -366,11 +449,24 @@ pub async fn get_vps_status(
                             update_query.execute(pool.get_ref()).await?;
 
                             // Return updated status
-                            let updated_vps: UserVps =
+                            let mut updated_vps: UserVps =
                                 sqlx::query_as("SELECT * FROM user_vps WHERE id = $1")
                                     .bind(vps.id)
                                     .fetch_one(pool.get_ref())
                                     .await?;
+
+                            // Create DNS record if VPS is ready with IP
+                            if new_status == "ready" && ip_address.is_some() {
+                                if let Some(ref cf) = cloudflare {
+                                    let _ = ensure_dns_record(&updated_vps, cf.get_ref(), pool.get_ref()).await;
+                                    // Reload to get updated dns_record_id
+                                    updated_vps = sqlx::query_as("SELECT * FROM user_vps WHERE id = $1")
+                                        .bind(vps.id)
+                                        .fetch_one(pool.get_ref())
+                                        .await?;
+                                }
+                            }
+
                             return Ok(HttpResponse::Ok().json(VpsStatusResponse::from(updated_vps)));
                         }
                     }
