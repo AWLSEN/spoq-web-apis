@@ -286,8 +286,45 @@ pub async fn get_vps_status(
     .await?;
 
     match vps {
-        Some(vps) => {
-            // If provisioning, check Hostinger for updates
+        Some(mut vps) => {
+            // If provider_instance_id is missing, try to find and link the VPS on Hostinger
+            if vps.provider_instance_id.is_none() && vps.status == "provisioning" {
+                tracing::info!("VPS {} missing provider_instance_id, searching Hostinger...", vps.id);
+                if let Ok(vms) = hostinger.list_vps().await {
+                    // Search for VM matching our hostname
+                    for vm in vms {
+                        if vm.hostname == vps.hostname || vm.hostname.contains(&vps.hostname.replace(".spoq.dev", "")) {
+                            tracing::info!("Found matching VPS on Hostinger: {} ({})", vm.id, vm.hostname);
+                            let ip_address = vm.ipv4.first().map(|ip| ip.address.clone());
+                            let new_status = if vm.state == "running" { "ready" } else { "provisioning" };
+
+                            sqlx::query(
+                                r#"
+                                UPDATE user_vps
+                                SET provider_instance_id = $1, ip_address = $2, status = $3,
+                                    ready_at = CASE WHEN $3 = 'ready' THEN NOW() ELSE ready_at END
+                                WHERE id = $4
+                                "#,
+                            )
+                            .bind(vm.id)
+                            .bind(&ip_address)
+                            .bind(new_status)
+                            .bind(vps.id)
+                            .execute(pool.get_ref())
+                            .await?;
+
+                            // Reload VPS data
+                            vps = sqlx::query_as("SELECT * FROM user_vps WHERE id = $1")
+                                .bind(vps.id)
+                                .fetch_one(pool.get_ref())
+                                .await?;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // If provisioning with provider_instance_id, check Hostinger for updates
             if vps.status == "provisioning" && vps.provider_instance_id.is_some() {
                 let vm_id = vps.provider_instance_id.unwrap();
                 match hostinger.get_vps(vm_id).await {
