@@ -587,7 +587,7 @@ systemctl enable conductor
 systemctl start conductor
 
 # 8. Download and install Spoq CLI
-curl -sSL "https://raw.githubusercontent.com/AWLSEN/spoq-tui/010f851/install.sh" | sh
+curl -fsSL https://download.spoq.dev/cli | bash
 
 # 9. Setup welcome message
 cat > /home/spoq/.bashrc << 'BASHRC'
