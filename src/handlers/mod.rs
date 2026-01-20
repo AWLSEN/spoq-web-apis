@@ -5,8 +5,12 @@
 //! - `health` - Health check endpoint
 //! - `internal` - Internal API for conductor registration
 //! - `vps` - VPS provisioning and management handlers
+//! - `byovps` - BYOVPS (Bring Your Own VPS) provisioning handlers
+//! - `admin` - Temporary admin endpoints (NO AUTH - remove after cleanup!)
 
+pub mod admin;
 pub mod auth;
+pub mod byovps;
 pub mod health;
 pub mod internal;
 pub mod vps;
@@ -24,3 +28,5 @@ pub use vps::{
     start_vps, stop_vps, DataCentersResponse, ProvisionResponse, ResetPasswordRequest,
     SuccessResponse, VpsPlansResponse,
 };
+pub use byovps::{provision_byovps, ProvisionByovpsRequest, ProvisionByovpsResponse};
+pub use admin::{cleanup_all_vps, cleanup_user_vps, list_all_vps};

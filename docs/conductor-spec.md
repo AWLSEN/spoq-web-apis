@@ -22,18 +22,18 @@ Conductor already works. Just need to add JWT protection for HTTP and WebSocket 
 
 ## JWT Protection
 
-### Config
+### Config (Environment Variables)
 
-```toml
-# /etc/conductor/config.toml
-
-[auth]
-# Same secret as central backend (Railway env: JWT_SECRET)
-jwt_secret = "your-secret-from-railway"
-
-# UUID of user who owns this VPS
-owner_id = "user-uuid-from-provisioning"
+```bash
+# Set via systemd service or shell
+export CONDUCTOR_AUTH__JWT_SECRET="your-secret-from-railway"
+export CONDUCTOR_AUTH__OWNER_ID="user-uuid-from-provisioning"
 ```
+
+| Variable | Description | Set By |
+|----------|-------------|--------|
+| `CONDUCTOR_AUTH__JWT_SECRET` | Same secret as central backend (Railway) | Post-install script |
+| `CONDUCTOR_AUTH__OWNER_ID` | User's UUID from provisioning | Post-install script |
 
 ### Expected JWT Claims
 
@@ -114,17 +114,21 @@ fn validate_websocket(req: &WsRequest, config: &Config) -> Result<(), AuthError>
 
 ### Startup Validation
 
-Refuse to start without valid config:
+Refuse to start without valid env vars:
 
 ```rust
-fn validate_config(config: &Config) -> Result<(), StartupError> {
-    if config.jwt_secret.is_empty() || config.jwt_secret.len() < 32 {
-        return Err(StartupError::InvalidJwtSecret);
+fn validate_env() -> Result<Config, StartupError> {
+    let jwt_secret = std::env::var("CONDUCTOR_AUTH__JWT_SECRET")
+        .map_err(|_| StartupError::MissingJwtSecret)?;
+
+    if jwt_secret.len() < 32 {
+        return Err(StartupError::WeakJwtSecret);
     }
-    if config.owner_id.is_empty() {
-        return Err(StartupError::MissingOwnerId);
-    }
-    Ok(())
+
+    let owner_id = std::env::var("CONDUCTOR_AUTH__OWNER_ID")
+        .map_err(|_| StartupError::MissingOwnerId)?;
+
+    Ok(Config { jwt_secret, owner_id })
 }
 ```
 
@@ -143,7 +147,7 @@ fn validate_config(config: &Config) -> Result<(), StartupError> {
 | Wrong user's token | 403 Forbidden (owner_id mismatch) |
 | Forged token | 401 (signature verification fails) |
 | Expired token | 401 (exp check) |
-| Stolen binary | Useless without jwt_secret + owner_id config |
+| Stolen binary | Useless without env vars (JWT_SECRET + OWNER_ID) |
 
 ---
 

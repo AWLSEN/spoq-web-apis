@@ -16,10 +16,14 @@ use spoq_web_apis::handlers::{
     // VPS handlers
     get_vps_status, list_datacenters, list_plans, provision_vps, reset_password, restart_vps,
     start_vps, stop_vps,
+    // BYOVPS handlers
+    provision_byovps,
+    // Admin handlers (TEMPORARY - NO AUTH)
+    cleanup_all_vps, cleanup_user_vps, list_all_vps,
 };
 use spoq_web_apis::handlers::internal::register_conductor;
 use spoq_web_apis::middleware::{create_rate_limiter, create_internal_rate_limiter};
-use spoq_web_apis::services::HostingerClient;
+use spoq_web_apis::services::{CloudflareService, HostingerClient};
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -71,6 +75,21 @@ async fn main() -> std::io::Result<()> {
         web::Data::new(HostingerClient::new(key.clone()))
     });
 
+    // Create Cloudflare client if API token and zone ID are configured
+    let cloudflare_client = match (&config.cloudflare_api_token, &config.cloudflare_zone_id) {
+        (Some(token), Some(zone_id)) => {
+            tracing::info!("Cloudflare DNS client configured");
+            Some(web::Data::new(CloudflareService::new(
+                token.clone(),
+                zone_id.clone(),
+            )))
+        }
+        _ => {
+            tracing::warn!("Cloudflare DNS not configured - DNS records won't be created");
+            None
+        }
+    };
+
     // Wrap pool and config for VPS handlers
     let db_pool = web::Data::new(pool);
     let app_config = web::Data::new(config);
@@ -115,6 +134,26 @@ async fn main() -> std::io::Result<()> {
                     .wrap(internal_rate_limiter)
                     .route("/conductor/register", web::post().to(register_conductor)),
             );
+
+        // Add Cloudflare client if configured
+        if let Some(ref cloudflare) = cloudflare_client {
+            app = app.app_data(cloudflare.clone());
+        }
+
+        // Add BYOVPS routes (always available - doesn't require Hostinger)
+        app = app.service(
+            web::scope("/api/byovps")
+                .route("/provision", web::post().to(provision_byovps)),
+        );
+
+        // TEMPORARY: Admin routes for database cleanup (NO AUTHENTICATION!)
+        // TODO: Remove these routes after database cleanup is complete
+        app = app.service(
+            web::scope("/api/admin")
+                .route("/cleanup-vps", web::delete().to(cleanup_all_vps))
+                .route("/cleanup-vps/{email}", web::delete().to(cleanup_user_vps))
+                .route("/list-vps", web::get().to(list_all_vps)),
+        );
 
         // Add VPS routes if Hostinger is configured
         if let Some(ref hostinger) = hostinger_client {

@@ -27,6 +27,32 @@ echo ""
 echo -e "Base URL: ${YELLOW}$BASE_URL${NC}"
 echo ""
 
+# Show menu
+echo -e "${YELLOW}Select a flow to test:${NC}"
+echo -e "  ${GREEN}1)${NC} Full Flow (Device Auth + VPS Provision)"
+echo -e "  ${GREEN}2)${NC} VPS Status Only"
+echo -e "  ${GREEN}3)${NC} Test BYOVPS Provisioning"
+echo ""
+echo -n "Enter choice [1-3]: "
+read -r MENU_CHOICE
+echo ""
+
+case $MENU_CHOICE in
+    1)
+        TEST_MODE="full"
+        ;;
+    2)
+        TEST_MODE="status"
+        ;;
+    3)
+        TEST_MODE="byovps"
+        ;;
+    *)
+        echo -e "${RED}Invalid choice. Exiting.${NC}"
+        exit 1
+        ;;
+esac
+
 # Helper function for API calls with auto-refresh on 401
 api_call() {
     local method=$1
@@ -95,9 +121,9 @@ save_credentials() {
 }
 
 # ============================================================================
-# Step 1: Health Check
+# Health Check (All modes)
 # ============================================================================
-echo -e "${YELLOW}[1/6] Health Check${NC}"
+echo -e "${YELLOW}[Health Check]${NC}"
 HEALTH=$(curl -s "$BASE_URL/health")
 if echo "$HEALTH" | jq -e '.status == "healthy"' > /dev/null 2>&1; then
     echo -e "${GREEN}✓ Server is healthy${NC}"
@@ -109,37 +135,36 @@ fi
 echo ""
 
 # ============================================================================
-# Step 2: List VPS Plans (Public endpoint)
+# VPS Plans & Data Centers (Full mode only)
 # ============================================================================
-echo -e "${YELLOW}[2/6] List VPS Plans${NC}"
-PLANS=$(api_call GET "/api/vps/plans")
-if echo "$PLANS" | jq -e '.plans' > /dev/null 2>&1; then
-    echo -e "${GREEN}✓ VPS Plans available:${NC}"
-    echo "$PLANS" | jq -r '.plans[] | "  - \(.name): \(.vcpu) vCPU, \(.ram_gb)GB RAM, $\(.monthly_price_cents/100)/mo"'
-else
-    echo -e "${RED}✗ Failed to get VPS plans (Hostinger may not be configured)${NC}"
-    echo "$PLANS"
+if [ "$TEST_MODE" == "full" ]; then
+    echo -e "${YELLOW}[List VPS Plans]${NC}"
+    PLANS=$(api_call GET "/api/vps/plans")
+    if echo "$PLANS" | jq -e '.plans' > /dev/null 2>&1; then
+        echo -e "${GREEN}✓ VPS Plans available:${NC}"
+        echo "$PLANS" | jq -r '.plans[] | "  - \(.name): \(.vcpu) vCPU, \(.ram_gb)GB RAM, $\(.monthly_price_cents/100)/mo"'
+    else
+        echo -e "${RED}✗ Failed to get VPS plans (Hostinger may not be configured)${NC}"
+        echo "$PLANS"
+    fi
+    echo ""
+
+    echo -e "${YELLOW}[List Data Centers]${NC}"
+    DCS=$(api_call GET "/api/vps/datacenters")
+    if echo "$DCS" | jq -e '.data_centers' > /dev/null 2>&1; then
+        echo -e "${GREEN}✓ Data Centers available:${NC}"
+        echo "$DCS" | jq -r '.data_centers[] | "  - \(.city), \(.country) (\(.continent))"'
+    else
+        echo -e "${RED}✗ Failed to get data centers${NC}"
+        echo "$DCS"
+    fi
+    echo ""
 fi
-echo ""
 
 # ============================================================================
-# Step 3: List Data Centers (Public endpoint)
+# Authentication (All modes)
 # ============================================================================
-echo -e "${YELLOW}[3/6] List Data Centers${NC}"
-DCS=$(api_call GET "/api/vps/datacenters")
-if echo "$DCS" | jq -e '.data_centers' > /dev/null 2>&1; then
-    echo -e "${GREEN}✓ Data Centers available:${NC}"
-    echo "$DCS" | jq -r '.data_centers[] | "  - \(.city), \(.country) (\(.continent))"'
-else
-    echo -e "${RED}✗ Failed to get data centers${NC}"
-    echo "$DCS"
-fi
-echo ""
-
-# ============================================================================
-# Step 4: Authentication (Device Flow)
-# ============================================================================
-echo -e "${YELLOW}[4/6] Authentication${NC}"
+echo -e "${YELLOW}[Authentication]${NC}"
 
 if load_credentials; then
     echo -e "Using stored access token"
@@ -237,81 +262,204 @@ echo -e "${GREEN}✓ Authenticated with access token${NC}"
 echo ""
 
 # ============================================================================
-# Step 5: Check VPS Status
+# VPS Status Check (Full and Status modes)
 # ============================================================================
-echo -e "${YELLOW}[5/6] Check VPS Status${NC}"
-VPS_STATUS=$(api_call GET "/api/vps/status" "" "$ACCESS_TOKEN")
+if [ "$TEST_MODE" == "full" ] || [ "$TEST_MODE" == "status" ]; then
+    echo -e "${YELLOW}[Check VPS Status]${NC}"
+    VPS_STATUS=$(api_call GET "/api/vps/status" "" "$ACCESS_TOKEN")
 
-if echo "$VPS_STATUS" | jq -e '.hostname' > /dev/null 2>&1; then
-    echo -e "${GREEN}✓ VPS Found:${NC}"
-    echo "$VPS_STATUS" | jq '{hostname, status, ip_address, plan_id}'
-    VPS_EXISTS=true
-else
-    echo -e "${YELLOW}No VPS found for this user${NC}"
-    echo "$VPS_STATUS" | jq '.message // .error'
-    VPS_EXISTS=false
+    if echo "$VPS_STATUS" | jq -e '.hostname' > /dev/null 2>&1; then
+        echo -e "${GREEN}✓ VPS Found:${NC}"
+        echo "$VPS_STATUS" | jq '{hostname, status, ip_address, plan_id}'
+        VPS_EXISTS=true
+    else
+        echo -e "${YELLOW}No VPS found for this user${NC}"
+        echo "$VPS_STATUS" | jq '.message // .error'
+        VPS_EXISTS=false
+    fi
+    echo ""
 fi
-echo ""
 
 # ============================================================================
-# Step 6: Provision VPS (if not exists)
+# VPS Provisioning (Full mode only)
 # ============================================================================
-echo -e "${YELLOW}[6/6] VPS Provisioning${NC}"
+if [ "$TEST_MODE" == "full" ]; then
+    echo -e "${YELLOW}[VPS Provisioning]${NC}"
 
-if [ "$VPS_EXISTS" == "true" ]; then
-    echo -e "${GREEN}VPS already exists, skipping provisioning${NC}"
-else
-    echo -e "Would you like to provision a new VPS? (y/n)"
-    read -r PROVISION_CHOICE
+    if [ "$VPS_EXISTS" == "true" ]; then
+        echo -e "${GREEN}VPS already exists, skipping provisioning${NC}"
+    else
+        echo -e "Would you like to provision a new VPS? (y/n)"
+        read -r PROVISION_CHOICE
 
-    if [ "$PROVISION_CHOICE" == "y" ] || [ "$PROVISION_CHOICE" == "Y" ]; then
-        # Show available plans
-        echo ""
-        echo -e "${BLUE}Available Plans:${NC}"
-        PLANS=$(api_call GET "/api/vps/plans")
-        echo "$PLANS" | jq -r '.plans[] | "  [\(.id | split("-") | .[2])]: \(.name) - \(.vcpu) vCPU, \(.ram_gb)GB RAM - $\(.monthly_price_cents/100)/mo"'
-        echo ""
-        echo -e "Enter plan (kvm1/kvm2/kvm4/kvm8) [default: kvm1]:"
-        read -r PLAN_CHOICE
-        PLAN_CHOICE=${PLAN_CHOICE:-kvm1}
-        PLAN_ID="hostingercom-vps-${PLAN_CHOICE}-usd-1m"
+        if [ "$PROVISION_CHOICE" == "y" ] || [ "$PROVISION_CHOICE" == "Y" ]; then
+            # Show available plans
+            echo ""
+            echo -e "${BLUE}Available Plans:${NC}"
+            PLANS=$(api_call GET "/api/vps/plans")
+            echo "$PLANS" | jq -r '.plans[] | "  [\(.id | split("-") | .[2])]: \(.name) - \(.vcpu) vCPU, \(.ram_gb)GB RAM - $\(.monthly_price_cents/100)/mo"'
+            echo ""
+            echo -e "Enter plan (kvm1/kvm2/kvm4/kvm8) [default: kvm1]:"
+            read -r PLAN_CHOICE
+            PLAN_CHOICE=${PLAN_CHOICE:-kvm1}
+            PLAN_ID="hostingercom-vps-${PLAN_CHOICE}-usd-1m"
 
-        # Show available data centers
-        echo ""
-        echo -e "${BLUE}Available Data Centers:${NC}"
-        DCS=$(api_call GET "/api/vps/datacenters")
-        echo "$DCS" | jq -r '.data_centers[] | "  [\(.id)]: \(.city), \(.country)"'
-        echo ""
-        echo -e "Enter data center ID [default: 9 (Phoenix)]:"
-        read -r DC_CHOICE
-        DC_CHOICE=${DC_CHOICE:-9}
+            # Show available data centers
+            echo ""
+            echo -e "${BLUE}Available Data Centers:${NC}"
+            DCS=$(api_call GET "/api/vps/datacenters")
+            echo "$DCS" | jq -r '.data_centers[] | "  [\(.id)]: \(.city), \(.country)"'
+            echo ""
+            echo -e "Enter data center ID [default: 9 (Phoenix)]:"
+            read -r DC_CHOICE
+            DC_CHOICE=${DC_CHOICE:-9}
 
-        echo ""
-        echo -e "Enter SSH password (min 12 chars):"
-        read -rs SSH_PASSWORD
+            echo ""
+            echo -e "Enter SSH password (min 12 chars):"
+            read -rs SSH_PASSWORD
+            echo ""
+
+            if [ ${#SSH_PASSWORD} -lt 12 ]; then
+                echo -e "${RED}Password must be at least 12 characters${NC}"
+                exit 1
+            fi
+
+            echo -e "Provisioning VPS with plan=$PLAN_ID, datacenter=$DC_CHOICE..."
+            PROVISION_RESULT=$(api_call POST "/api/vps/provision" "{\"ssh_password\":\"$SSH_PASSWORD\",\"plan_id\":\"$PLAN_ID\",\"data_center_id\":$DC_CHOICE}" "$ACCESS_TOKEN")
+
+            if echo "$PROVISION_RESULT" | jq -e '.id' > /dev/null 2>&1; then
+                echo -e "${GREEN}✓ VPS provisioning started!${NC}"
+                echo "$PROVISION_RESULT" | jq '{id, hostname, status, message}'
+
+                # Update credentials with VPS hostname
+                VPS_HOSTNAME=$(echo "$PROVISION_RESULT" | jq -r '.hostname')
+                jq ".vps_hostname = \"$VPS_HOSTNAME\"" "$CREDENTIALS_FILE" > "$CREDENTIALS_FILE.tmp" && mv "$CREDENTIALS_FILE.tmp" "$CREDENTIALS_FILE"
+            else
+                echo -e "${RED}✗ Provisioning failed${NC}"
+                echo "$PROVISION_RESULT" | jq '.'
+            fi
+        else
+            echo -e "Skipping provisioning"
+        fi
+    fi
+fi
+
+# ============================================================================
+# BYOVPS Provisioning (BYOVPS mode only)
+# ============================================================================
+if [ "$TEST_MODE" == "byovps" ]; then
+    echo -e "${YELLOW}[BYOVPS Provisioning]${NC}"
+    echo ""
+
+    # Prompt for VPS credentials
+    echo -e "Enter VPS IP address:"
+    read -r VPS_IP
+
+    echo -e "Enter SSH username [default: root]:"
+    read -r SSH_USERNAME
+    SSH_USERNAME=${SSH_USERNAME:-root}
+
+    echo -e "Enter SSH password:"
+    read -rs SSH_PASSWORD
+    echo ""
+
+    if [ -z "$VPS_IP" ] || [ -z "$SSH_PASSWORD" ]; then
+        echo -e "${RED}✗ VPS IP and SSH password are required${NC}"
+        exit 1
+    fi
+
+    echo -e "Calling BYOVPS provision endpoint..."
+
+    # Call the BYOVPS provision endpoint
+    BYOVPS_RESULT=$(api_call POST "/api/byovps/provision" "{\"vps_ip\":\"$VPS_IP\",\"ssh_username\":\"$SSH_USERNAME\",\"ssh_password\":\"$SSH_PASSWORD\"}" "$ACCESS_TOKEN")
+
+    # Check if the request was successful
+    if echo "$BYOVPS_RESULT" | jq -e '.hostname' > /dev/null 2>&1; then
+        # Display hostname
+        HOSTNAME=$(echo "$BYOVPS_RESULT" | jq -r '.hostname')
+        SCRIPT_STATUS=$(echo "$BYOVPS_RESULT" | jq -r '.install_script.status // empty')
+
+        # Check if script was successful
+        if [ "$SCRIPT_STATUS" == "success" ]; then
+            echo -e "${GREEN}✓ BYOVPS provisioning successful!${NC}"
+        else
+            echo -e "${YELLOW}⚠ BYOVPS provisioning completed with script errors${NC}"
+        fi
         echo ""
 
-        if [ ${#SSH_PASSWORD} -lt 12 ]; then
-            echo -e "${RED}Password must be at least 12 characters${NC}"
+        echo -e "${BLUE}Hostname:${NC} ${GREEN}$HOSTNAME${NC}"
+
+        # Display JWT credentials
+        echo ""
+        echo -e "${BLUE}JWT Credentials:${NC}"
+        JWT_TOKEN=$(echo "$BYOVPS_RESULT" | jq -r '.credentials.jwt_token // empty')
+        JWT_EXPIRY=$(echo "$BYOVPS_RESULT" | jq -r '.credentials.expires_at // empty')
+
+        if [ -n "$JWT_TOKEN" ] && [ "$JWT_TOKEN" != "null" ]; then
+            echo -e "  Token: ${YELLOW}${JWT_TOKEN:0:50}...${NC}"
+            echo -e "  Expires: ${YELLOW}$JWT_EXPIRY${NC}"
+        else
+            echo -e "  ${RED}No JWT credentials in response${NC}"
+        fi
+
+        # Display install script status
+        echo ""
+        echo -e "${BLUE}Install Script:${NC}"
+        SCRIPT_OUTPUT=$(echo "$BYOVPS_RESULT" | jq -r '.install_script.output // empty')
+
+        if [ -n "$SCRIPT_STATUS" ] && [ "$SCRIPT_STATUS" != "null" ]; then
+            if [ "$SCRIPT_STATUS" == "success" ]; then
+                echo -e "  Status: ${GREEN}✓ $SCRIPT_STATUS${NC}"
+            else
+                echo -e "  Status: ${RED}✗ $SCRIPT_STATUS${NC}"
+            fi
+
+            if [ -n "$SCRIPT_OUTPUT" ] && [ "$SCRIPT_OUTPUT" != "null" ] && [ "$SCRIPT_OUTPUT" != "" ]; then
+                echo -e "  Output (last 500 chars):"
+                echo "$SCRIPT_OUTPUT" | tail -c 500 | sed 's/^/    /'
+            fi
+        else
+            echo -e "  ${YELLOW}No install script status in response${NC}"
+        fi
+
+        # Display full JSON response for debugging
+        echo ""
+        echo -e "${BLUE}Full Response:${NC}"
+        echo "$BYOVPS_RESULT" | jq '.'
+
+        # Exit with error code if script failed
+        if [ "$SCRIPT_STATUS" != "success" ]; then
+            echo ""
+            echo -e "${RED}Installation script failed. Check the output above for details.${NC}"
             exit 1
         fi
 
-        echo -e "Provisioning VPS with plan=$PLAN_ID, datacenter=$DC_CHOICE..."
-        PROVISION_RESULT=$(api_call POST "/api/vps/provision" "{\"ssh_password\":\"$SSH_PASSWORD\",\"plan_id\":\"$PLAN_ID\",\"data_center_id\":$DC_CHOICE}" "$ACCESS_TOKEN")
-
-        if echo "$PROVISION_RESULT" | jq -e '.id' > /dev/null 2>&1; then
-            echo -e "${GREEN}✓ VPS provisioning started!${NC}"
-            echo "$PROVISION_RESULT" | jq '{id, hostname, status, message}'
-
-            # Update credentials with VPS hostname
-            VPS_HOSTNAME=$(echo "$PROVISION_RESULT" | jq -r '.hostname')
-            jq ".vps_hostname = \"$VPS_HOSTNAME\"" "$CREDENTIALS_FILE" > "$CREDENTIALS_FILE.tmp" && mv "$CREDENTIALS_FILE.tmp" "$CREDENTIALS_FILE"
-        else
-            echo -e "${RED}✗ Provisioning failed${NC}"
-            echo "$PROVISION_RESULT" | jq '.'
-        fi
     else
-        echo -e "Skipping provisioning"
+        echo -e "${RED}✗ BYOVPS provisioning failed${NC}"
+        echo ""
+
+        # Try to extract error message from various possible formats
+        ERROR_MSG=$(echo "$BYOVPS_RESULT" | jq -r '.error // .message // "Unknown error"')
+
+        # Check if it's an SSH authentication failure
+        if echo "$ERROR_MSG" | grep -qi "SSH\|authentication\|connection"; then
+            echo -e "${RED}SSH Connection Error:${NC}"
+            echo -e "  $ERROR_MSG"
+            echo ""
+            echo -e "${YELLOW}Troubleshooting tips:${NC}"
+            echo "  1. Verify the VPS IP address is correct"
+            echo "  2. Check that SSH is running on the VPS (port 22)"
+            echo "  3. Verify the username (usually 'root' for VPS)"
+            echo "  4. Double-check the SSH password"
+            echo "  5. Ensure the VPS firewall allows SSH connections"
+        else
+            echo -e "${RED}Error: $ERROR_MSG${NC}"
+        fi
+
+        echo ""
+        echo -e "${YELLOW}Full response:${NC}"
+        echo "$BYOVPS_RESULT" | jq '.'
+        exit 1
     fi
 fi
 

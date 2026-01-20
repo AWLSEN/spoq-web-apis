@@ -25,6 +25,7 @@ use crate::config::Config;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthenticatedUser;
 use crate::models::{ProvisionVpsRequest, UserVps, VpsDataCenter, VpsPlan, VpsStatusResponse};
+use crate::services::cloudflare::CloudflareService;
 use crate::services::hostinger::{generate_post_install_script, CreateVpsRequest, HostingerClient, VpsSetup};
 use crate::services::registration;
 
