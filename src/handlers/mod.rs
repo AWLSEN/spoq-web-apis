@@ -5,7 +5,9 @@
 //! - `health` - Health check endpoint
 //! - `vps` - VPS provisioning and management handlers
 //! - `byovps` - BYOVPS (Bring Your Own VPS) provisioning handlers
+//! - `admin` - Temporary admin endpoints (NO AUTH - remove after cleanup!)
 
+pub mod admin;
 pub mod auth;
 pub mod byovps;
 pub mod health;
@@ -25,3 +27,4 @@ pub use vps::{
     SuccessResponse, VpsPlansResponse,
 };
 pub use byovps::{provision_byovps, ProvisionByovpsRequest, ProvisionByovpsResponse};
+pub use admin::{cleanup_all_vps, cleanup_user_vps, list_all_vps};

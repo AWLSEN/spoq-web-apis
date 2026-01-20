@@ -18,6 +18,8 @@ use spoq_web_apis::handlers::{
     start_vps, stop_vps,
     // BYOVPS handlers
     provision_byovps,
+    // Admin handlers (TEMPORARY - NO AUTH)
+    cleanup_all_vps, cleanup_user_vps, list_all_vps,
 };
 use spoq_web_apis::middleware::create_rate_limiter;
 use spoq_web_apis::services::{CloudflareService, HostingerClient};
@@ -134,6 +136,15 @@ async fn main() -> std::io::Result<()> {
         app = app.service(
             web::scope("/api/byovps")
                 .route("/provision", web::post().to(provision_byovps)),
+        );
+
+        // TEMPORARY: Admin routes for database cleanup (NO AUTHENTICATION!)
+        // TODO: Remove these routes after database cleanup is complete
+        app = app.service(
+            web::scope("/api/admin")
+                .route("/cleanup-vps", web::delete().to(cleanup_all_vps))
+                .route("/cleanup-vps/{email}", web::delete().to(cleanup_user_vps))
+                .route("/list-vps", web::get().to(list_all_vps)),
         );
 
         // Add VPS routes if Hostinger is configured
