@@ -34,6 +34,24 @@ pub struct ProvisionByovpsRequest {
     pub ssh_password: String,
 }
 
+/// JWT credentials for the VPS
+#[derive(Debug, Serialize)]
+pub struct JwtCredentials {
+    /// JWT token for the VPS to authenticate with central server
+    pub jwt_token: String,
+    /// Token expiration timestamp
+    pub expires_at: String,
+}
+
+/// Install script status and output
+#[derive(Debug, Serialize)]
+pub struct InstallScript {
+    /// Status: "success" or "failed"
+    pub status: String,
+    /// Output from the script (stdout/stderr, truncated)
+    pub output: Option<String>,
+}
+
 /// Response for BYOVPS provisioning
 #[derive(Debug, Serialize)]
 pub struct ProvisionByovpsResponse {
@@ -45,10 +63,10 @@ pub struct ProvisionByovpsResponse {
     pub status: String,
     /// Human-readable message
     pub message: String,
-    /// Whether the install script executed successfully
-    pub script_success: bool,
-    /// Output from the install script (truncated)
-    pub script_output: Option<String>,
+    /// JWT credentials for VPS authentication
+    pub credentials: JwtCredentials,
+    /// Install script execution details
+    pub install_script: InstallScript,
 }
 
 /// Validate an IPv4 address format
@@ -334,6 +352,39 @@ pub async fn provision_byovps(
             .await?;
     }
 
+    // Generate JWT token for the VPS (valid for 10 years)
+    use jsonwebtoken::{encode, EncodingKey, Header};
+    use serde::{Deserialize as JwtDeserialize, Serialize as JwtSerialize};
+
+    #[derive(Debug, JwtSerialize, JwtDeserialize)]
+    struct Claims {
+        sub: String,  // VPS ID
+        owner_id: String,  // User ID
+        hostname: String,
+        exp: usize,
+    }
+
+    let now = chrono::Utc::now().timestamp() as usize;
+    let expiry = now + (10 * 365 * 24 * 60 * 60); // 10 years
+
+    let claims = Claims {
+        sub: vps_id.to_string(),
+        owner_id: user.user_id.to_string(),
+        hostname: hostname.clone(),
+        exp: expiry,
+    };
+
+    let jwt_token = encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(jwt_secret.as_bytes()),
+    )
+    .map_err(|e| AppError::Internal(format!("Failed to generate JWT: {}", e)))?;
+
+    let expires_at = chrono::DateTime::from_timestamp(expiry as i64, 0)
+        .unwrap_or_else(|| chrono::Utc::now())
+        .to_rfc3339();
+
     // Build the response message
     let message = if script_success {
         format!(
@@ -349,15 +400,18 @@ pub async fn provision_byovps(
         hostname,
         status: final_status.to_string(),
         message,
-        script_success,
-        script_output,
+        credentials: JwtCredentials {
+            jwt_token,
+            expires_at,
+        },
+        install_script: InstallScript {
+            status: if script_success { "success".to_string() } else { "failed".to_string() },
+            output: script_output,
+        },
     };
 
-    if script_success {
-        Ok(HttpResponse::Ok().json(response))
-    } else {
-        Ok(HttpResponse::InternalServerError().json(response))
-    }
+    // Always return 200 OK - the install_script.status indicates success/failure
+    Ok(HttpResponse::Ok().json(response))
 }
 
 #[cfg(test)]

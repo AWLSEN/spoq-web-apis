@@ -375,11 +375,18 @@ if [ "$TEST_MODE" == "byovps" ]; then
 
     # Check if the request was successful
     if echo "$BYOVPS_RESULT" | jq -e '.hostname' > /dev/null 2>&1; then
-        echo -e "${GREEN}✓ BYOVPS provisioning successful!${NC}"
-        echo ""
-
         # Display hostname
         HOSTNAME=$(echo "$BYOVPS_RESULT" | jq -r '.hostname')
+        SCRIPT_STATUS=$(echo "$BYOVPS_RESULT" | jq -r '.install_script.status // empty')
+
+        # Check if script was successful
+        if [ "$SCRIPT_STATUS" == "success" ]; then
+            echo -e "${GREEN}✓ BYOVPS provisioning successful!${NC}"
+        else
+            echo -e "${YELLOW}⚠ BYOVPS provisioning completed with script errors${NC}"
+        fi
+        echo ""
+
         echo -e "${BLUE}Hostname:${NC} ${GREEN}$HOSTNAME${NC}"
 
         # Display JWT credentials
@@ -392,39 +399,63 @@ if [ "$TEST_MODE" == "byovps" ]; then
             echo -e "  Token: ${YELLOW}${JWT_TOKEN:0:50}...${NC}"
             echo -e "  Expires: ${YELLOW}$JWT_EXPIRY${NC}"
         else
-            echo -e "  ${YELLOW}No JWT credentials in response${NC}"
+            echo -e "  ${RED}No JWT credentials in response${NC}"
         fi
 
         # Display install script status
         echo ""
         echo -e "${BLUE}Install Script:${NC}"
-        SCRIPT_STATUS=$(echo "$BYOVPS_RESULT" | jq -r '.install_script.status // empty')
         SCRIPT_OUTPUT=$(echo "$BYOVPS_RESULT" | jq -r '.install_script.output // empty')
 
         if [ -n "$SCRIPT_STATUS" ] && [ "$SCRIPT_STATUS" != "null" ]; then
             if [ "$SCRIPT_STATUS" == "success" ]; then
-                echo -e "  Status: ${GREEN}$SCRIPT_STATUS${NC}"
+                echo -e "  Status: ${GREEN}✓ $SCRIPT_STATUS${NC}"
             else
-                echo -e "  Status: ${RED}$SCRIPT_STATUS${NC}"
+                echo -e "  Status: ${RED}✗ $SCRIPT_STATUS${NC}"
             fi
 
-            if [ -n "$SCRIPT_OUTPUT" ] && [ "$SCRIPT_OUTPUT" != "null" ]; then
-                echo -e "  Output:"
-                echo "$SCRIPT_OUTPUT" | sed 's/^/    /'
+            if [ -n "$SCRIPT_OUTPUT" ] && [ "$SCRIPT_OUTPUT" != "null" ] && [ "$SCRIPT_OUTPUT" != "" ]; then
+                echo -e "  Output (last 500 chars):"
+                echo "$SCRIPT_OUTPUT" | tail -c 500 | sed 's/^/    /'
             fi
         else
             echo -e "  ${YELLOW}No install script status in response${NC}"
         fi
 
-        # Display full JSON response
+        # Display full JSON response for debugging
         echo ""
         echo -e "${BLUE}Full Response:${NC}"
         echo "$BYOVPS_RESULT" | jq '.'
 
+        # Exit with error code if script failed
+        if [ "$SCRIPT_STATUS" != "success" ]; then
+            echo ""
+            echo -e "${RED}Installation script failed. Check the output above for details.${NC}"
+            exit 1
+        fi
+
     else
         echo -e "${RED}✗ BYOVPS provisioning failed${NC}"
+        echo ""
+
+        # Try to extract error message from various possible formats
         ERROR_MSG=$(echo "$BYOVPS_RESULT" | jq -r '.error // .message // "Unknown error"')
-        echo -e "${RED}Error: $ERROR_MSG${NC}"
+
+        # Check if it's an SSH authentication failure
+        if echo "$ERROR_MSG" | grep -qi "SSH\|authentication\|connection"; then
+            echo -e "${RED}SSH Connection Error:${NC}"
+            echo -e "  $ERROR_MSG"
+            echo ""
+            echo -e "${YELLOW}Troubleshooting tips:${NC}"
+            echo "  1. Verify the VPS IP address is correct"
+            echo "  2. Check that SSH is running on the VPS (port 22)"
+            echo "  3. Verify the username (usually 'root' for VPS)"
+            echo "  4. Double-check the SSH password"
+            echo "  5. Ensure the VPS firewall allows SSH connections"
+        else
+            echo -e "${RED}Error: $ERROR_MSG${NC}"
+        fi
+
         echo ""
         echo -e "${YELLOW}Full response:${NC}"
         echo "$BYOVPS_RESULT" | jq '.'
