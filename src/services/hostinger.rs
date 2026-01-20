@@ -544,6 +544,7 @@ curl -fsSL "$CONDUCTOR_URL" | bash
 mkdir -p /etc/spoq
 echo "$REGISTRATION_CODE" > /etc/spoq/registration
 chmod 600 /etc/spoq/registration
+chown -R spoq:spoq /etc/spoq
 
 # 7. Create minimal Conductor config (Conductor populates [auth] after registration)
 mkdir -p /etc/conductor
@@ -557,6 +558,7 @@ api_url = "$API_URL"
 # Conductor reads /etc/spoq/registration on first boot
 # and calls $API_URL/internal/conductor/register
 EOF
+chown -R spoq:spoq /etc/conductor
 
 # 8. Create VPS marker file
 cat > /etc/spoq/vps.marker << EOF
