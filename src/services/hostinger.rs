@@ -485,10 +485,18 @@ impl HostingerClient {
 }
 
 /// Generate the post-install script content for VPS provisioning
+///
+/// # Arguments
+/// * `ssh_password` - Password for the spoq user
+/// * `registration_code` - 6-character code for Conductor self-registration
+/// * `api_url` - API URL for Conductor to call during registration
+/// * `hostname` - The hostname for this VPS (e.g., "username.spoq.dev")
+/// * `conductor_url` - URL to download the Conductor binary
+/// * `cli_url` - URL to download the Spoq CLI binary
 pub fn generate_post_install_script(
     ssh_password: &str,
-    owner_id: &str,
-    jwt_secret: &str,
+    registration_code: &str,
+    api_url: &str,
     hostname: &str,
     conductor_url: &str,
     cli_url: &str,
@@ -503,8 +511,8 @@ set -e
 
 # Variables
 SSH_PASSWORD="{ssh_password}"
-OWNER_ID="{owner_id}"
-JWT_SECRET="{jwt_secret}"
+REGISTRATION_CODE="{registration_code}"
+API_URL="{api_url}"
 HOSTNAME="{hostname}"
 CONDUCTOR_URL="{conductor_url}"
 CLI_URL="{cli_url}"
@@ -527,20 +535,25 @@ echo "spoq ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/spoq
 curl -sSL "$CONDUCTOR_URL" -o /usr/local/bin/conductor
 chmod +x /usr/local/bin/conductor
 
-# 5. Configure Conductor
+# 5. Write registration code (Conductor will self-register on first boot)
+mkdir -p /etc/spoq
+echo "$REGISTRATION_CODE" > /etc/spoq/registration
+chmod 600 /etc/spoq/registration
+
+# 6. Create minimal Conductor config (Conductor populates [auth] after registration)
 mkdir -p /etc/conductor
 cat > /etc/conductor/config.toml << EOF
 [server]
 host = "0.0.0.0"
 port = 8080
 
-[auth]
-owner_id = "$OWNER_ID"
-jwt_secret = "$JWT_SECRET"
+[registration]
+api_url = "$API_URL"
+# Conductor reads /etc/spoq/registration on first boot
+# and calls $API_URL/internal/conductor/register
 EOF
 
-# 6. Create VPS marker file
-mkdir -p /etc/spoq
+# 7. Create VPS marker file
 cat > /etc/spoq/vps.marker << EOF
 {{
   "vps": true,
@@ -621,8 +634,8 @@ echo "Conductor: $(systemctl is-active conductor)"
 echo "Caddy: $(systemctl is-active caddy)"
 "#,
         ssh_password = ssh_password,
-        owner_id = owner_id,
-        jwt_secret = jwt_secret,
+        registration_code = registration_code,
+        api_url = api_url,
         hostname = hostname,
         conductor_url = conductor_url,
         cli_url = cli_url,
@@ -637,16 +650,19 @@ mod tests {
     fn test_generate_post_install_script() {
         let script = generate_post_install_script(
             "TestPassword123!",
-            "user-uuid-123",
-            "jwt-secret-456",
+            "ABC123",  // registration_code
+            "https://api.spoq.dev",  // api_url
             "test.spoq.dev",
             "https://spoq.dev/releases/conductor",
             "https://spoq.dev/releases/spoq-cli",
         );
 
         assert!(script.contains("TestPassword123!"));
-        assert!(script.contains("user-uuid-123"));
+        assert!(script.contains("ABC123"));  // registration code
+        assert!(script.contains("https://api.spoq.dev"));  // api_url
         assert!(script.contains("test.spoq.dev"));
+        assert!(script.contains("/etc/spoq/registration"));  // registration file
+        assert!(script.contains("[registration]"));  // registration section in config
         assert!(script.contains("systemctl enable conductor"));
         assert!(script.contains("systemctl enable caddy"));
     }
