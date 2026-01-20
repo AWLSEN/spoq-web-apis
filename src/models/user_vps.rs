@@ -153,10 +153,26 @@ pub struct VpsStatusResponse {
     pub data_center_id: i32,
     pub created_at: DateTime<Utc>,
     pub ready_at: Option<DateTime<Utc>>,
+    /// Conductor status: "pending" | "registered" | "healthy"
+    pub conductor_status: Option<String>,
 }
 
 impl From<UserVps> for VpsStatusResponse {
     fn from(vps: UserVps) -> Self {
+        // Determine conductor status based on VPS state
+        let conductor_status = if vps.conductor_verified_at.is_some() {
+            Some("healthy".to_string())
+        } else if vps.registered_at.is_some() {
+            Some("registered".to_string())
+        } else if matches!(
+            vps.status.as_str(),
+            "registering" | "configuring" | "ready"
+        ) {
+            Some("pending".to_string())
+        } else {
+            None
+        };
+
         Self {
             id: vps.id,
             hostname: vps.hostname,
@@ -168,6 +184,7 @@ impl From<UserVps> for VpsStatusResponse {
             data_center_id: vps.data_center_id,
             created_at: vps.created_at,
             ready_at: vps.ready_at,
+            conductor_status,
         }
     }
 }

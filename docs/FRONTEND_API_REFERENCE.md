@@ -125,11 +125,24 @@ SPOQ uses a device authorization flow (similar to GitHub CLI / Netflix TV login)
 | Status | Description | Next States |
 |--------|-------------|-------------|
 | `pending` | Initial state, order placed | `provisioning`, `failed` |
-| `provisioning` | VPS being created on Hostinger | `ready`, `failed` |
+| `provisioning` | VPS being created on Hostinger | `registering`, `failed` |
+| `registering` | VM running, waiting for Conductor registration | `configuring`, `failed` |
+| `configuring` | Registered, health check pending | `ready`, `failed` |
 | `ready` | Fully operational | `stopped` |
 | `stopped` | VPS powered off | `ready`, `terminated` |
 | `failed` | Provisioning failed | (terminal) |
 | `terminated` | VPS deleted | (terminal) |
+
+### Conductor Status Values
+
+The `conductor_status` field in the VPS status response indicates the health of the Conductor service:
+
+| Value | Description | Typical VPS Status |
+|-------|-------------|-------------------|
+| `null` | VM not yet running or too early in provisioning | `pending`, `provisioning` |
+| `"pending"` | VM running, awaiting Conductor registration | `registering` |
+| `"registered"` | Conductor has registered, health check in progress | `configuring` |
+| `"healthy"` | Conductor is fully operational and health checks passing | `ready` |
 
 ---
 
@@ -405,7 +418,42 @@ Authorization: Bearer <access_token>
   "plan_id": "hostingercom-vps-kvm1-usd-1m",
   "data_center_id": 9,
   "created_at": "2026-01-15T10:00:00Z",
-  "ready_at": null
+  "ready_at": null,
+  "conductor_status": null
+}
+```
+
+**Response (200 OK - Registering):**
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "hostname": "username.spoq.dev",
+  "status": "registering",
+  "ip_address": "89.116.49.69",
+  "ssh_username": "spoq",
+  "provider": "hostinger",
+  "plan_id": "hostingercom-vps-kvm1-usd-1m",
+  "data_center_id": 9,
+  "created_at": "2026-01-15T10:00:00Z",
+  "ready_at": null,
+  "conductor_status": "pending"
+}
+```
+
+**Response (200 OK - Configuring):**
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "hostname": "username.spoq.dev",
+  "status": "configuring",
+  "ip_address": "89.116.49.69",
+  "ssh_username": "spoq",
+  "provider": "hostinger",
+  "plan_id": "hostingercom-vps-kvm1-usd-1m",
+  "data_center_id": 9,
+  "created_at": "2026-01-15T10:00:00Z",
+  "ready_at": null,
+  "conductor_status": "registered"
 }
 ```
 
@@ -421,7 +469,8 @@ Authorization: Bearer <access_token>
   "plan_id": "hostingercom-vps-kvm1-usd-1m",
   "data_center_id": 9,
   "created_at": "2026-01-15T10:00:00Z",
-  "ready_at": "2026-01-15T10:08:32Z"
+  "ready_at": "2026-01-15T10:08:32Z",
+  "conductor_status": "healthy"
 }
 ```
 
@@ -571,15 +620,31 @@ OK
                           ▼                                     ▼
                 ┌─────────────────┐                   ┌─────────────────┐
                 │  PROVISIONING   │                   │     FAILED      │
-                │ (VPS creating)  │                   │ (order failed)  │
+                │ (VPS creating)  │                   │ (provision err) │
                 └────────┬────────┘                   └─────────────────┘
                          │
-                         │ Hostinger creates VPS
-                         │ Post-install script runs
+                         │ VM boots
+                         │ conductor_status: null
                          │
                          ▼
                 ┌─────────────────┐
-                │      READY      │
+                │   REGISTERING   │  conductor_status: "pending"
+                │ (awaiting reg)  │
+                └────────┬────────┘
+                         │
+                         │ Conductor registers
+                         │
+                         ▼
+                ┌─────────────────┐
+                │  CONFIGURING    │  conductor_status: "registered"
+                │ (health check)  │
+                └────────┬────────┘
+                         │
+                         │ Health check passes
+                         │
+                         ▼
+                ┌─────────────────┐
+                │      READY      │  conductor_status: "healthy"
                 │ (operational)   │
                 └────────┬────────┘
                          │
