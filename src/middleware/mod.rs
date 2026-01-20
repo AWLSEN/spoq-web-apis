@@ -9,4 +9,4 @@ pub mod rate_limit;
 
 // Re-export commonly used types
 pub use auth::{AuthError, AuthenticatedUser};
-pub use rate_limit::{create_dev_rate_limiter, create_rate_limiter, RateLimiter, RateLimiterConfig};
+pub use rate_limit::{create_dev_rate_limiter, create_internal_rate_limiter, create_rate_limiter, RateLimiter, RateLimiterConfig};

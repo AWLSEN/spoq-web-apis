@@ -3,10 +3,12 @@
 //! This module contains all the route handlers:
 //! - `auth` - GitHub OAuth and device flow authentication handlers
 //! - `health` - Health check endpoint
+//! - `internal` - Internal API for conductor registration
 //! - `vps` - VPS provisioning and management handlers
 
 pub mod auth;
 pub mod health;
+pub mod internal;
 pub mod vps;
 
 // Re-export commonly used types

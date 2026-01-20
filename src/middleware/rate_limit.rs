@@ -49,6 +49,25 @@ pub fn create_rate_limiter() -> RateLimiter {
     Governor::new(&config)
 }
 
+/// Creates a stricter rate limiter for internal registration endpoints.
+///
+/// This rate limiter allows 5 requests per minute per IP to prevent
+/// brute-force attacks on registration codes.
+///
+/// # Returns
+///
+/// A configured `Governor` middleware with strict limits
+pub fn create_internal_rate_limiter() -> RateLimiter {
+    // 5 requests per minute = 1 request every 12 seconds
+    let config: RateLimiterConfig = GovernorConfigBuilder::default()
+        .seconds_per_request(12) // 1 request every 12 seconds = 5 per minute
+        .burst_size(5) // Allow bursts up to 5 requests
+        .finish()
+        .expect("Failed to build internal rate limiter configuration");
+
+    Governor::new(&config)
+}
+
 /// Creates a more permissive rate limiter for development/testing.
 ///
 /// This rate limiter allows approximately 60 requests per minute per IP,
