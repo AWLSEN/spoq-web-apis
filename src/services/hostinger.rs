@@ -538,7 +538,7 @@ echo "spoq ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/spoq
 chmod 440 /etc/sudoers.d/spoq
 
 # 5. Download and install Conductor
-curl -sSL "$CONDUCTOR_URL" -o /usr/local/bin/conductor
+curl -fsSL "$CONDUCTOR_URL" -o /usr/local/bin/conductor
 chmod +x /usr/local/bin/conductor
 
 # 6. Write registration code (Conductor will self-register on first boot)
