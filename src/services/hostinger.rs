@@ -539,6 +539,8 @@ chmod 440 /etc/sudoers.d/spoq
 
 # 5. Download and install Conductor (auto-detects platform: x86_64 or aarch64)
 curl -fsSL "$CONDUCTOR_URL" | bash
+# Ensure spoq user can access the binary
+chown -R spoq:spoq /opt/spoq
 
 # 6. Write registration code (Conductor will self-register on first boot)
 mkdir -p /etc/spoq
@@ -635,9 +637,19 @@ EOF
 systemctl enable caddy
 systemctl restart caddy
 
+# Wait a few seconds for services to fully start
+sleep 5
+
 echo "=== Provisioning Complete ==="
 echo "Conductor: $(systemctl is-active conductor)"
 echo "Caddy: $(systemctl is-active caddy)"
+
+# If Conductor isn't active, show the error
+if [ "$(systemctl is-active conductor)" != "active" ]; then
+    echo ""
+    echo "=== Conductor Error Log ==="
+    journalctl -u conductor -n 20 --no-pager || echo "Could not retrieve logs"
+fi
 "#,
         ssh_password = ssh_password,
         registration_code = registration_code,
