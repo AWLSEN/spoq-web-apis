@@ -26,7 +26,7 @@ use crate::services::device::{
     approve_device_grant, create_device_grant, decode_verification_param, deny_device_grant,
     get_device_grant_by_device_code, get_device_grant_by_word_code,
 };
-use crate::services::github::{exchange_code, get_authorize_url, get_user, GitHubOAuthConfig};
+use crate::services::github::{exchange_code, get_authorize_url, get_primary_email, get_user, get_user_emails, GitHubOAuthConfig};
 use crate::services::token::{
     create_access_token, generate_refresh_token, hash_token, verify_token,
 };
@@ -293,7 +293,7 @@ pub async fn github_callback(
     };
 
     // Fetch GitHub user profile
-    let github_user = match get_user(&data.http_client, &github_access_token).await {
+    let mut github_user = match get_user(&data.http_client, &github_access_token).await {
         Ok(user) => user,
         Err(e) => {
             tracing::error!("Failed to fetch GitHub user: {:?}", e);
@@ -301,6 +301,48 @@ pub async fn github_callback(
                 .json(serde_json::json!({"error": "Failed to fetch user profile"}));
         }
     };
+
+    // Fetch user emails from GitHub /user/emails endpoint (non-fatal if it fails)
+    // This ensures we get the primary verified email even if the user's profile email is private
+    match get_user_emails(&data.http_client, &github_access_token).await {
+        Ok(emails) => {
+            if let Some(primary_email) = get_primary_email(&emails) {
+                // Use the primary verified email from /user/emails endpoint
+                // This is more reliable than the profile email which may be private/null
+                match &github_user.email {
+                    None => {
+                        tracing::debug!(
+                            "Setting email from /user/emails endpoint for user {}: {}",
+                            github_user.login,
+                            primary_email
+                        );
+                        github_user.email = Some(primary_email);
+                    }
+                    Some(existing_email) if existing_email != &primary_email => {
+                        tracing::debug!(
+                            "Preferring primary email from /user/emails for user {}: {} (was: {})",
+                            github_user.login,
+                            primary_email,
+                            existing_email
+                        );
+                        github_user.email = Some(primary_email);
+                    }
+                    Some(_) => {
+                        // Emails match, no change needed
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            // Non-fatal: log the error but continue with the existing flow
+            // The user may still have an email from the profile endpoint
+            tracing::warn!(
+                "Failed to fetch user emails from GitHub for user {}: {:?}. Continuing with profile email.",
+                github_user.login,
+                e
+            );
+        }
+    }
 
     // Find or create user in database
     let user = match find_or_create_from_github(&data.pool, &github_user).await {
