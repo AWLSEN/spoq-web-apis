@@ -124,6 +124,7 @@ pub async fn provision_vps(
     pool: web::Data<PgPool>,
     hostinger: web::Data<HostingerClient>,
     config: web::Data<Config>,
+    cloudflare: Option<web::Data<CloudflareService>>,
     req: web::Json<ProvisionVpsRequest>,
 ) -> AppResult<HttpResponse> {
     // Validate password
@@ -336,6 +337,7 @@ pub async fn get_vps_status(
     user: AuthenticatedUser,
     pool: web::Data<PgPool>,
     hostinger: web::Data<HostingerClient>,
+    cloudflare: Option<web::Data<CloudflareService>>,
 ) -> AppResult<HttpResponse> {
     let vps: Option<UserVps> = sqlx::query_as(
         "SELECT * FROM user_vps WHERE user_id = $1 AND status != 'terminated' ORDER BY created_at DESC LIMIT 1",
@@ -369,6 +371,32 @@ pub async fn get_vps_status(
                             .execute(pool.get_ref())
                             .await?;
 
+                            // Create DNS A record if Cloudflare is configured and we have an IP
+                            if let (Some(cf), Some(ref ip)) = (&cloudflare, &ip_address) {
+                                let subdomain = vps.hostname.replace(".spoq.dev", "");
+                                match cf.update_dns_record(&subdomain, ip).await {
+                                    Ok(record) => {
+                                        tracing::info!(
+                                            "DNS record created/updated: {}.spoq.dev -> {} (id: {})",
+                                            subdomain,
+                                            ip,
+                                            record.id
+                                        );
+
+                                        // Update VPS with DNS record ID
+                                        sqlx::query("UPDATE user_vps SET dns_record_id = $1 WHERE id = $2")
+                                            .bind(&record.id)
+                                            .bind(vps.id)
+                                            .execute(pool.get_ref())
+                                            .await?;
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Failed to create DNS record for {}: {}", vps.hostname, e);
+                                        // Continue anyway - DNS is not critical
+                                    }
+                                }
+                            }
+
                             // Reload VPS data
                             vps = sqlx::query_as("SELECT * FROM user_vps WHERE id = $1")
                                 .bind(vps.id)
@@ -392,7 +420,33 @@ pub async fn get_vps_status(
                                 .bind(vps.id)
                                 .execute(pool.get_ref())
                                 .await?;
-                            vps.ip_address = ip_address;
+                            vps.ip_address = ip_address.clone();
+
+                            // Create DNS A record if Cloudflare is configured
+                            if let (Some(cf), Some(ref ip)) = (&cloudflare, &ip_address) {
+                                let subdomain = vps.hostname.replace(".spoq.dev", "");
+                                match cf.update_dns_record(&subdomain, ip).await {
+                                    Ok(record) => {
+                                        tracing::info!(
+                                            "DNS record created/updated: {}.spoq.dev -> {} (id: {})",
+                                            subdomain,
+                                            ip,
+                                            record.id
+                                        );
+
+                                        // Update VPS with DNS record ID
+                                        sqlx::query("UPDATE user_vps SET dns_record_id = $1 WHERE id = $2")
+                                            .bind(&record.id)
+                                            .bind(vps.id)
+                                            .execute(pool.get_ref())
+                                            .await?;
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Failed to create DNS record for {}: {}", vps.hostname, e);
+                                        // Continue anyway - DNS is not critical
+                                    }
+                                }
+                            }
                         }
 
                         match vm.state.as_str() {
