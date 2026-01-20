@@ -503,9 +503,10 @@ pub fn generate_post_install_script(
         r#"#!/bin/bash
 # Spoq VPS Provisioning Script
 # Executed automatically by Hostinger after VPS creation
-# Output logged to /post_install.log
+# Output logged to /var/log/spoq-setup.log
 
 set -e
+exec > /var/log/spoq-setup.log 2>&1
 
 # Variables
 SSH_PASSWORD="{ssh_password}"
@@ -522,11 +523,14 @@ apt-get update && apt-get upgrade -y
 # 2. Install dependencies
 apt-get install -y curl jq ca-certificates
 
-# 3. Create spoq user
-useradd -m -s /bin/bash spoq
+# 3. Create spoq user (idempotent - only if doesn't exist)
+if ! id spoq >/dev/null 2>&1; then
+    useradd -m -s /bin/bash spoq
+fi
 echo "spoq:$SSH_PASSWORD" | chpasswd
 usermod -aG sudo spoq
-echo "spoq ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/spoq
+echo "spoq ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/spoq
+chmod 440 /etc/sudoers.d/spoq
 
 # 4. Download and install Conductor
 curl -sSL "$CONDUCTOR_URL" -o /usr/local/bin/conductor
@@ -611,7 +615,7 @@ ufw --force enable
 
 # 11. Install Caddy
 apt-get install -y debian-keyring debian-archive-keyring apt-transport-https
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
 apt-get update && apt-get install -y caddy
 
