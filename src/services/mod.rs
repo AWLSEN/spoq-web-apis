@@ -10,6 +10,7 @@
 pub mod device;
 pub mod github;
 pub mod hostinger;
+pub mod registration;
 pub mod token;
 pub mod user;
 
