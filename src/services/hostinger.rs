@@ -581,7 +581,8 @@ After=network.target
 Type=simple
 User=spoq
 Group=spoq
-ExecStart=/opt/spoq/bin/conductor --config /etc/conductor/config.toml
+WorkingDirectory=/opt/spoq
+ExecStart=/opt/spoq/bin/conductor
 Restart=always
 RestartSec=5
 Environment="RUST_LOG=info"
