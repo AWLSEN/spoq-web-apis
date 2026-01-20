@@ -15,6 +15,7 @@ use argon2::{
     Argon2,
 };
 use chrono::Utc;
+use reqwest::Client;
 use serde::Serialize;
 use sqlx::PgPool;
 use std::time::Duration;
@@ -354,19 +355,16 @@ pub async fn get_vps_status(
                         if vm.hostname == vps.hostname || vm.hostname.contains(&vps.hostname.replace(".spoq.dev", "")) {
                             tracing::info!("Found matching VPS on Hostinger: {} ({})", vm.id, vm.hostname);
                             let ip_address = vm.ipv4.first().map(|ip| ip.address.clone());
-                            let new_status = if vm.state == "running" { "ready" } else { "provisioning" };
 
                             sqlx::query(
                                 r#"
                                 UPDATE user_vps
-                                SET provider_instance_id = $1, ip_address = $2, status = $3,
-                                    ready_at = CASE WHEN $3 = 'ready' THEN NOW() ELSE ready_at END
-                                WHERE id = $4
+                                SET provider_instance_id = $1, ip_address = $2
+                                WHERE id = $3
                                 "#,
                             )
                             .bind(vm.id)
                             .bind(&ip_address)
-                            .bind(new_status)
                             .bind(vps.id)
                             .execute(pool.get_ref())
                             .await?;
@@ -382,60 +380,73 @@ pub async fn get_vps_status(
                 }
             }
 
-            // If provisioning with provider_instance_id, check Hostinger for updates
-            if vps.status == "provisioning" && vps.provider_instance_id.is_some() {
-                let vm_id = vps.provider_instance_id.unwrap();
+            // Determine status based on Hostinger VM state and registration status
+            let computed_status = if let Some(vm_id) = vps.provider_instance_id {
                 match hostinger.get_vps(vm_id).await {
                     Ok(vm) => {
-                        // Update IP if available and status
+                        // Update IP if available
                         let ip_address = vm.ipv4.first().map(|ip| ip.address.clone());
-                        let new_status = match vm.state.as_str() {
-                            "running" => "ready",
-                            "stopped" => "stopped",
-                            "installing" | "starting" | "stopping" => "provisioning",
-                            _ => "provisioning",
-                        };
-
-                        if new_status != vps.status
-                            || (ip_address.is_some() && vps.ip_address.is_none())
-                        {
-                            let update_query = if ip_address.is_some() {
-                                sqlx::query(
-                                    r#"
-                                    UPDATE user_vps
-                                    SET status = $1, ip_address = $2, ready_at = CASE WHEN $1 = 'ready' THEN NOW() ELSE ready_at END
-                                    WHERE id = $3
-                                    "#,
-                                )
-                                .bind(new_status)
+                        if ip_address.is_some() && vps.ip_address.is_none() {
+                            sqlx::query("UPDATE user_vps SET ip_address = $1 WHERE id = $2")
                                 .bind(&ip_address)
                                 .bind(vps.id)
-                            } else {
-                                sqlx::query(
-                                    r#"
-                                    UPDATE user_vps
-                                    SET status = $1, ready_at = CASE WHEN $1 = 'ready' THEN NOW() ELSE ready_at END
-                                    WHERE id = $2
-                                    "#,
-                                )
-                                .bind(new_status)
-                                .bind(vps.id)
-                            };
-                            update_query.execute(pool.get_ref()).await?;
+                                .execute(pool.get_ref())
+                                .await?;
+                            vps.ip_address = ip_address;
+                        }
 
-                            // Return updated status
-                            let updated_vps: UserVps =
-                                sqlx::query_as("SELECT * FROM user_vps WHERE id = $1")
-                                    .bind(vps.id)
-                                    .fetch_one(pool.get_ref())
-                                    .await?;
-                            return Ok(HttpResponse::Ok().json(VpsStatusResponse::from(updated_vps)));
+                        match vm.state.as_str() {
+                            "installing" | "starting" | "stopping" => "provisioning".to_string(),
+                            "running" => {
+                                if vps.registered_at.is_none() {
+                                    // Waiting for Conductor to call /register
+                                    "registering".to_string()
+                                } else if vps.conductor_verified_at.is_none() {
+                                    // Registered but not verified - do health check
+                                    let http_client = Client::builder()
+                                        .timeout(Duration::from_secs(5))
+                                        .build()
+                                        .map_err(|e| AppError::Internal(format!("Failed to create HTTP client: {}", e)))?;
+
+                                    let health_url = format!("https://{}/health", vps.hostname);
+                                    match http_client.get(&health_url).send().await {
+                                        Ok(resp) if resp.status().is_success() => {
+                                            // Update conductor_verified_at
+                                            sqlx::query(
+                                                "UPDATE user_vps SET conductor_verified_at = NOW(), status = 'ready', ready_at = COALESCE(ready_at, NOW()) WHERE id = $1"
+                                            )
+                                            .bind(vps.id)
+                                            .execute(pool.get_ref())
+                                            .await?;
+                                            "ready".to_string()
+                                        }
+                                        _ => "configuring".to_string(), // Health check failed, still starting
+                                    }
+                                } else {
+                                    "ready".to_string() // Already verified
+                                }
+                            }
+                            "stopped" => "stopped".to_string(),
+                            _ => "provisioning".to_string(),
                         }
                     }
                     Err(e) => {
                         tracing::warn!("Failed to fetch VPS status from Hostinger: {}", e);
+                        vps.status.clone()
                     }
                 }
+            } else {
+                vps.status.clone()
+            };
+
+            // Update status in DB if changed
+            if computed_status != vps.status {
+                sqlx::query("UPDATE user_vps SET status = $1 WHERE id = $2")
+                    .bind(&computed_status)
+                    .bind(vps.id)
+                    .execute(pool.get_ref())
+                    .await?;
+                vps.status = computed_status;
             }
 
             Ok(HttpResponse::Ok().json(VpsStatusResponse::from(vps)))

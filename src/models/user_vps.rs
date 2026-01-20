@@ -13,7 +13,9 @@ pub enum VpsStatus {
     Pending,
     /// VPS being created on the provider
     Provisioning,
-    /// Post-install script running
+    /// VM running, waiting for Conductor to register
+    Registering,
+    /// Post-install script running, Conductor registered but health check not passing
     Configuring,
     /// Fully operational
     Ready,
@@ -30,6 +32,7 @@ impl VpsStatus {
         match self {
             VpsStatus::Pending => "pending",
             VpsStatus::Provisioning => "provisioning",
+            VpsStatus::Registering => "registering",
             VpsStatus::Configuring => "configuring",
             VpsStatus::Ready => "ready",
             VpsStatus::Failed => "failed",
@@ -42,6 +45,7 @@ impl VpsStatus {
         match s {
             "pending" => VpsStatus::Pending,
             "provisioning" => VpsStatus::Provisioning,
+            "registering" => VpsStatus::Registering,
             "configuring" => VpsStatus::Configuring,
             "ready" => VpsStatus::Ready,
             "failed" => VpsStatus::Failed,
@@ -120,7 +124,7 @@ impl UserVps {
     pub fn is_active(&self) -> bool {
         matches!(
             self.status.as_str(),
-            "pending" | "provisioning" | "configuring" | "ready"
+            "pending" | "provisioning" | "registering" | "configuring" | "ready"
         )
     }
 }
