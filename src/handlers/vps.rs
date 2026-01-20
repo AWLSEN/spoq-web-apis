@@ -124,7 +124,7 @@ pub async fn provision_vps(
     pool: web::Data<PgPool>,
     hostinger: web::Data<HostingerClient>,
     config: web::Data<Config>,
-    cloudflare: Option<web::Data<CloudflareService>>,
+    _cloudflare: Option<web::Data<CloudflareService>>,
     req: web::Json<ProvisionVpsRequest>,
 ) -> AppResult<HttpResponse> {
     // Validate password

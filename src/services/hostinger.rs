@@ -683,7 +683,8 @@ mod tests {
             "https://api.spoq.dev",  // api_url
             "test.spoq.dev",
             "https://spoq.dev/releases/conductor",
-            "https://spoq.dev/releases/spoq-cli",
+            "test-jwt-secret",
+            "owner-123",  // owner_id
         );
 
         assert!(script.contains("TestPassword123!"));

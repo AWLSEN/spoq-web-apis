@@ -549,14 +549,20 @@ mod tests {
             hostname: "testuser.spoq.dev".to_string(),
             status: "ready".to_string(),
             message: "BYOVPS provisioned successfully".to_string(),
-            script_success: true,
-            script_output: Some("Setup complete".to_string()),
+            credentials: JwtCredentials {
+                jwt_token: "test.jwt.token".to_string(),
+                expires_at: "2024-12-31T23:59:59Z".to_string(),
+            },
+            install_script: InstallScript {
+                status: "success".to_string(),
+                output: Some("Setup complete".to_string()),
+            },
         };
 
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("testuser.spoq.dev"));
         assert!(json.contains("ready"));
-        assert!(json.contains("script_success"));
+        assert!(json.contains("success"));
     }
 
     #[test]
@@ -566,12 +572,18 @@ mod tests {
             hostname: "user.spoq.dev".to_string(),
             status: "failed".to_string(),
             message: "SSH connection failed".to_string(),
-            script_success: false,
-            script_output: None,
+            credentials: JwtCredentials {
+                jwt_token: "test.jwt.token".to_string(),
+                expires_at: "2024-12-31T23:59:59Z".to_string(),
+            },
+            install_script: InstallScript {
+                status: "failed".to_string(),
+                output: None,
+            },
         };
 
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("failed"));
-        assert!(json.contains("script_success\":false"));
+        assert!(json.contains("\"status\":\"failed\""));
     }
 }
