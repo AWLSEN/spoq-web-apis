@@ -229,8 +229,8 @@ pub async fn provision_vps(
         r#"
         INSERT INTO user_vps (
             id, user_id, provider, plan_id, template_id, data_center_id,
-            hostname, status, ssh_username, ssh_password_hash, jwt_secret
-        ) VALUES ($1, $2, 'hostinger', $3, $4, $5, $6, 'pending', 'root', $7, $8)
+            hostname, status, ssh_username, ssh_password_hash, jwt_secret, device_type
+        ) VALUES ($1, $2, 'hostinger', $3, $4, $5, $6, 'pending', 'root', $7, $8, 'vps')
         "#,
     )
     .bind(vps_id)
