@@ -1,12 +1,12 @@
 -- Add registration tracking fields to user_vps
-ALTER TABLE user_vps ADD COLUMN registration_code_hash TEXT;
-ALTER TABLE user_vps ADD COLUMN registration_expires_at TIMESTAMPTZ;
-ALTER TABLE user_vps ADD COLUMN vps_secret_hash TEXT;
-ALTER TABLE user_vps ADD COLUMN registered_at TIMESTAMPTZ;
-ALTER TABLE user_vps ADD COLUMN conductor_verified_at TIMESTAMPTZ;
+ALTER TABLE user_vps ADD COLUMN IF NOT EXISTS registration_code_hash TEXT;
+ALTER TABLE user_vps ADD COLUMN IF NOT EXISTS registration_expires_at TIMESTAMPTZ;
+ALTER TABLE user_vps ADD COLUMN IF NOT EXISTS vps_secret_hash TEXT;
+ALTER TABLE user_vps ADD COLUMN IF NOT EXISTS registered_at TIMESTAMPTZ;
+ALTER TABLE user_vps ADD COLUMN IF NOT EXISTS conductor_verified_at TIMESTAMPTZ;
 
 -- Index for registration lookup (query pending registrations)
-CREATE INDEX idx_user_vps_registration_pending
+CREATE INDEX IF NOT EXISTS idx_user_vps_registration_pending
 ON user_vps (registration_expires_at)
 WHERE registered_at IS NULL;
 
@@ -15,4 +15,4 @@ WHERE registered_at IS NULL;
 UPDATE user_vps
 SET registered_at = created_at,
     conductor_verified_at = COALESCE(ready_at, created_at)
-WHERE status = 'ready';
+WHERE status = 'ready' AND registered_at IS NULL;
