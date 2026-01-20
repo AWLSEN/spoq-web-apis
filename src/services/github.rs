@@ -39,6 +39,19 @@ pub struct GitHubUser {
     pub avatar_url: Option<String>,
 }
 
+/// GitHub email information returned from the /user/emails endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubEmail {
+    /// Email address
+    pub email: String,
+    /// Whether this is the primary email
+    pub primary: bool,
+    /// Whether the email is verified
+    pub verified: bool,
+    /// Email visibility setting
+    pub visibility: Option<String>,
+}
+
 /// Errors that can occur during GitHub OAuth operations.
 #[derive(Debug, Error)]
 pub enum GithubError {
@@ -194,6 +207,81 @@ pub async fn get_user(
     Ok(user)
 }
 
+/// Fetches the authenticated user's email addresses from GitHub.
+///
+/// # Arguments
+///
+/// * `client` - The reqwest HTTP client
+/// * `access_token` - The access token obtained from `exchange_code`
+///
+/// # Returns
+///
+/// A Result containing a Vec of GitHubEmail, or a GithubError
+///
+/// # Errors
+///
+/// Returns `GithubError::RequestFailed` if the HTTP request fails
+/// Returns `GithubError::InvalidResponse` if the response cannot be parsed
+/// Returns `GithubError::ApiError` if GitHub returns an error response
+pub async fn get_user_emails(
+    client: &reqwest::Client,
+    access_token: &str,
+) -> Result<Vec<GitHubEmail>, GithubError> {
+    let response = client
+        .get("https://api.github.com/user/emails")
+        .header("Authorization", format!("Bearer {}", access_token))
+        .header("User-Agent", "spoq-web-apis")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(GithubError::ApiError(format!(
+            "GitHub API returned {}: {}",
+            status, body
+        )));
+    }
+
+    let emails: Vec<GitHubEmail> = response.json().await.map_err(|_| GithubError::InvalidResponse)?;
+    Ok(emails)
+}
+
+/// Extracts the primary verified email from a list of GitHub emails.
+///
+/// # Arguments
+///
+/// * `emails` - A slice of GitHubEmail to search
+///
+/// # Returns
+///
+/// An Option containing the primary verified email string, or None if no verified emails exist
+///
+/// # Logic
+///
+/// 1. Filters for verified emails only
+/// 2. Looks for an email marked as primary
+/// 3. Falls back to the first verified email if no primary is found
+/// 4. Returns None if no verified emails exist
+pub fn get_primary_email(emails: &[GitHubEmail]) -> Option<String> {
+    let verified_emails: Vec<&GitHubEmail> = emails
+        .iter()
+        .filter(|e| e.verified)
+        .collect();
+
+    if verified_emails.is_empty() {
+        return None;
+    }
+
+    // Try to find the primary verified email
+    verified_emails
+        .iter()
+        .find(|e| e.primary)
+        .or_else(|| verified_emails.first())
+        .map(|e| e.email.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,5 +385,139 @@ mod tests {
         assert_eq!(cloned.client_id, config.client_id);
         assert_eq!(cloned.client_secret, config.client_secret);
         assert_eq!(cloned.redirect_uri, config.redirect_uri);
+    }
+
+    #[test]
+    fn test_github_email_serialization() {
+        let email = GitHubEmail {
+            email: "test@example.com".to_string(),
+            primary: true,
+            verified: true,
+            visibility: Some("public".to_string()),
+        };
+
+        let json = serde_json::to_string(&email).expect("Failed to serialize");
+        assert!(json.contains("\"email\":\"test@example.com\""));
+        assert!(json.contains("\"primary\":true"));
+        assert!(json.contains("\"verified\":true"));
+        assert!(json.contains("\"visibility\":\"public\""));
+    }
+
+    #[test]
+    fn test_github_email_deserialization() {
+        let json = r#"{
+            "email": "test@example.com",
+            "primary": true,
+            "verified": true,
+            "visibility": "public"
+        }"#;
+
+        let email: GitHubEmail = serde_json::from_str(json).expect("Failed to deserialize");
+        assert_eq!(email.email, "test@example.com");
+        assert_eq!(email.primary, true);
+        assert_eq!(email.verified, true);
+        assert_eq!(email.visibility, Some("public".to_string()));
+    }
+
+    #[test]
+    fn test_github_email_deserialization_null_visibility() {
+        let json = r#"{
+            "email": "test@example.com",
+            "primary": false,
+            "verified": false,
+            "visibility": null
+        }"#;
+
+        let email: GitHubEmail = serde_json::from_str(json).expect("Failed to deserialize");
+        assert_eq!(email.email, "test@example.com");
+        assert_eq!(email.primary, false);
+        assert_eq!(email.verified, false);
+        assert!(email.visibility.is_none());
+    }
+
+    #[test]
+    fn test_get_primary_email_with_primary_verified() {
+        let emails = vec![
+            GitHubEmail {
+                email: "secondary@example.com".to_string(),
+                primary: false,
+                verified: true,
+                visibility: Some("public".to_string()),
+            },
+            GitHubEmail {
+                email: "primary@example.com".to_string(),
+                primary: true,
+                verified: true,
+                visibility: Some("public".to_string()),
+            },
+        ];
+
+        let result = get_primary_email(&emails);
+        assert_eq!(result, Some("primary@example.com".to_string()));
+    }
+
+    #[test]
+    fn test_get_primary_email_no_primary_but_verified() {
+        let emails = vec![
+            GitHubEmail {
+                email: "first@example.com".to_string(),
+                primary: false,
+                verified: true,
+                visibility: Some("public".to_string()),
+            },
+            GitHubEmail {
+                email: "second@example.com".to_string(),
+                primary: false,
+                verified: true,
+                visibility: Some("public".to_string()),
+            },
+        ];
+
+        let result = get_primary_email(&emails);
+        assert_eq!(result, Some("first@example.com".to_string()));
+    }
+
+    #[test]
+    fn test_get_primary_email_only_unverified() {
+        let emails = vec![
+            GitHubEmail {
+                email: "unverified@example.com".to_string(),
+                primary: true,
+                verified: false,
+                visibility: Some("public".to_string()),
+            },
+        ];
+
+        let result = get_primary_email(&emails);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_get_primary_email_empty_list() {
+        let emails: Vec<GitHubEmail> = vec![];
+        let result = get_primary_email(&emails);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_get_primary_email_mixed_verified_status() {
+        let emails = vec![
+            GitHubEmail {
+                email: "unverified-primary@example.com".to_string(),
+                primary: true,
+                verified: false,
+                visibility: Some("public".to_string()),
+            },
+            GitHubEmail {
+                email: "verified-secondary@example.com".to_string(),
+                primary: false,
+                verified: true,
+                visibility: Some("public".to_string()),
+            },
+        ];
+
+        // Should return the verified email, even though it's not primary
+        let result = get_primary_email(&emails);
+        assert_eq!(result, Some("verified-secondary@example.com".to_string()));
     }
 }
