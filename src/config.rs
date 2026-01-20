@@ -33,7 +33,10 @@ pub enum ConfigError {
 impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
         // Load .env file if present (ok if it doesn't exist)
-        dotenvy::dotenv().ok();
+        // Skip loading .env in test mode to allow tests to control env vars
+        if env::var("SPOQ_TEST_MODE").is_err() {
+            dotenvy::dotenv().ok();
+        }
 
         // Required variables
         let database_url = env::var("DATABASE_URL")

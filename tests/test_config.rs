@@ -6,6 +6,7 @@ use std::sync::Mutex;
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn setup_required_env() {
+    env::set_var("SPOQ_TEST_MODE", "1");
     env::set_var("DATABASE_URL", "postgres://localhost/test");
     env::set_var("GITHUB_CLIENT_ID", "test_client_id");
     env::set_var("GITHUB_CLIENT_SECRET", "test_client_secret");
@@ -14,6 +15,7 @@ fn setup_required_env() {
 }
 
 fn cleanup_env() {
+    env::remove_var("SPOQ_TEST_MODE");
     env::remove_var("DATABASE_URL");
     env::remove_var("GITHUB_CLIENT_ID");
     env::remove_var("GITHUB_CLIENT_SECRET");
@@ -27,7 +29,7 @@ fn cleanup_env() {
 
 #[test]
 fn test_config_from_env_with_all_required() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     cleanup_env();
     setup_required_env();
 
@@ -48,10 +50,11 @@ fn test_config_from_env_with_all_required() {
 
 #[test]
 fn test_config_from_env_with_custom_values() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     cleanup_env();
 
     // Set all environment variables with custom values
+    env::set_var("SPOQ_TEST_MODE", "1");
     env::set_var("DATABASE_URL", "postgres://localhost/custom");
     env::set_var("GITHUB_CLIENT_ID", "custom_client_id");
     env::set_var("GITHUB_CLIENT_SECRET", "custom_client_secret");
@@ -79,10 +82,11 @@ fn test_config_from_env_with_custom_values() {
 
 #[test]
 fn test_config_missing_database_url() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     cleanup_env();
 
     // Set all except DATABASE_URL
+    env::set_var("SPOQ_TEST_MODE", "1");
     env::set_var("GITHUB_CLIENT_ID", "test_client_id");
     env::set_var("GITHUB_CLIENT_SECRET", "test_client_secret");
     env::set_var("GITHUB_REDIRECT_URI", "http://localhost:8080/callback");
@@ -103,9 +107,10 @@ fn test_config_missing_database_url() {
 
 #[test]
 fn test_config_missing_github_client_id() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     cleanup_env();
 
+    env::set_var("SPOQ_TEST_MODE", "1");
     env::set_var("DATABASE_URL", "postgres://localhost/test");
     env::set_var("GITHUB_CLIENT_SECRET", "test_client_secret");
     env::set_var("GITHUB_REDIRECT_URI", "http://localhost:8080/callback");
@@ -126,7 +131,7 @@ fn test_config_missing_github_client_id() {
 
 #[test]
 fn test_config_invalid_port() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     cleanup_env();
     setup_required_env();
 
@@ -147,7 +152,7 @@ fn test_config_invalid_port() {
 
 #[test]
 fn test_config_invalid_jwt_expiry() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     cleanup_env();
     setup_required_env();
 
@@ -168,7 +173,7 @@ fn test_config_invalid_jwt_expiry() {
 
 #[test]
 fn test_server_addr() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     cleanup_env();
     setup_required_env();
 
@@ -183,7 +188,7 @@ fn test_server_addr() {
 
 #[test]
 fn test_server_addr_default() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     cleanup_env();
     setup_required_env();
 
