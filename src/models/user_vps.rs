@@ -97,6 +97,11 @@ pub struct UserVps {
     pub created_at: DateTime<Utc>,
     pub ready_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
+    pub registration_code_hash: Option<String>,
+    pub registration_expires_at: Option<DateTime<Utc>>,
+    pub vps_secret_hash: Option<String>,
+    pub registered_at: Option<DateTime<Utc>>,
+    pub conductor_verified_at: Option<DateTime<Utc>>,
 }
 
 impl UserVps {
