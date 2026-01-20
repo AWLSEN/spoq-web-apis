@@ -523,7 +523,12 @@ apt-get update && apt-get upgrade -y
 # 2. Install dependencies
 apt-get install -y curl jq ca-certificates
 
-# 3. Create spoq user (idempotent - only if doesn't exist)
+# 3. Set system hostname
+hostnamectl set-hostname "$HOSTNAME"
+# Update /etc/hosts to resolve new hostname
+echo "127.0.1.1 $HOSTNAME" >> /etc/hosts
+
+# 4. Create spoq user (idempotent - only if doesn't exist)
 if ! id spoq >/dev/null 2>&1; then
     useradd -m -s /bin/bash spoq
 fi
@@ -532,16 +537,16 @@ usermod -aG sudo spoq
 echo "spoq ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/spoq
 chmod 440 /etc/sudoers.d/spoq
 
-# 4. Download and install Conductor
+# 5. Download and install Conductor
 curl -sSL "$CONDUCTOR_URL" -o /usr/local/bin/conductor
 chmod +x /usr/local/bin/conductor
 
-# 5. Write registration code (Conductor will self-register on first boot)
+# 6. Write registration code (Conductor will self-register on first boot)
 mkdir -p /etc/spoq
 echo "$REGISTRATION_CODE" > /etc/spoq/registration
 chmod 600 /etc/spoq/registration
 
-# 6. Create minimal Conductor config (Conductor populates [auth] after registration)
+# 7. Create minimal Conductor config (Conductor populates [auth] after registration)
 mkdir -p /etc/conductor
 cat > /etc/conductor/config.toml << EOF
 [server]
@@ -554,7 +559,7 @@ api_url = "$API_URL"
 # and calls $API_URL/internal/conductor/register
 EOF
 
-# 7. Create VPS marker file
+# 8. Create VPS marker file
 cat > /etc/spoq/vps.marker << EOF
 {{
   "vps": true,
@@ -563,7 +568,7 @@ cat > /etc/spoq/vps.marker << EOF
 }}
 EOF
 
-# 7. Create Conductor systemd service
+# 9. Create Conductor systemd service
 cat > /etc/systemd/system/conductor.service << 'SERVICEEOF'
 [Unit]
 Description=Spoq Conductor - AI Backend Service
@@ -586,10 +591,10 @@ systemctl daemon-reload
 systemctl enable conductor
 systemctl start conductor
 
-# 8. Download and install Spoq CLI
+# 10. Download and install Spoq CLI
 curl -fsSL https://download.spoq.dev/cli | bash
 
-# 9. Setup welcome message
+# 11. Setup welcome message
 cat > /home/spoq/.bashrc << 'BASHRC'
 export PATH="/usr/local/bin:$PATH"
 
@@ -607,19 +612,19 @@ echo ""
 BASHRC
 chown spoq:spoq /home/spoq/.bashrc
 
-# 10. Configure firewall
+# 12. Configure firewall
 ufw allow 22    # SSH
 ufw allow 80    # HTTP (for Let's Encrypt verification)
 ufw allow 443   # HTTPS
 ufw --force enable
 
-# 11. Install Caddy
+# 13. Install Caddy
 apt-get install -y debian-keyring debian-archive-keyring apt-transport-https
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
 apt-get update && apt-get install -y caddy
 
-# 12. Configure Caddy
+# 14. Configure Caddy
 cat > /etc/caddy/Caddyfile << EOF
 $HOSTNAME {{
     reverse_proxy localhost:8080
