@@ -297,7 +297,7 @@ pub async fn provision_byovps(
         &registration_code,
         "https://spoq-api-production.up.railway.app",
         &hostname,
-        "https://download.spoq.dev/conductor/download/linux-x86_64",
+        "https://download.spoq.dev/conductor",
     );
 
     // SSH into the VPS and execute the script

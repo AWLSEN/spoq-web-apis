@@ -537,9 +537,8 @@ usermod -aG sudo spoq
 echo "spoq ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/spoq
 chmod 440 /etc/sudoers.d/spoq
 
-# 5. Download and install Conductor
-curl -fsSL "$CONDUCTOR_URL" -o /usr/local/bin/conductor
-chmod +x /usr/local/bin/conductor
+# 5. Download and install Conductor (auto-detects platform: x86_64 or aarch64)
+curl -fsSL "$CONDUCTOR_URL" | bash
 
 # 6. Write registration code (Conductor will self-register on first boot)
 mkdir -p /etc/spoq
@@ -578,7 +577,7 @@ After=network.target
 Type=simple
 User=spoq
 Group=spoq
-ExecStart=/usr/local/bin/conductor --config /etc/conductor/config.toml
+ExecStart=/opt/spoq/bin/conductor --config /etc/conductor/config.toml
 Restart=always
 RestartSec=5
 Environment="RUST_LOG=info"
