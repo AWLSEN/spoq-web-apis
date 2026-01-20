@@ -220,10 +220,9 @@ pub async fn provision_vps(
     let script_content = generate_post_install_script(
         &req.ssh_password,
         &registration_code,
-        "https://api.spoq.dev",
+        "https://spoq-api-production.up.railway.app",
         &hostname,
         "https://spoq.dev/releases/conductor",
-        "https://spoq.dev/releases/spoq-cli",
     );
 
     // Create post-install script on Hostinger

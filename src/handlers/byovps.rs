@@ -18,9 +18,10 @@ use uuid::Uuid;
 use crate::config::Config;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthenticatedUser;
+use crate::services::hostinger::generate_post_install_script;
+use crate::services::registration;
 use crate::models::UserVps;
 use crate::services::cloudflare::CloudflareService;
-use crate::services::hostinger::generate_post_install_script;
 use crate::services::ssh_installer::{SshConfig, SshInstallerService};
 
 /// Request to provision a BYOVPS (Bring Your Own VPS)
@@ -271,9 +272,33 @@ pub async fn provision_byovps(
         );
     }
 
+    // Generate registration code for Conductor self-registration
+    let registration_code = registration::generate_registration_code();
+    let registration_code_hash = registration::hash_code(&registration_code)
+        .map_err(|e| AppError::Internal(format!("Failed to hash registration code: {}", e)))?;
+    let registration_expires_at = chrono::Utc::now() + chrono::Duration::minutes(15);
+
+    // Update VPS record with registration info
+    sqlx::query(
+        r#"UPDATE user_vps
+           SET registration_code_hash = $1,
+               registration_expires_at = $2
+           WHERE id = $3"#,
+    )
+    .bind(&registration_code_hash)
+    .bind(registration_expires_at)
+    .bind(vps_id)
+    .execute(pool.get_ref())
+    .await?;
+
     // Generate the post-install script
-    let script_content =
-        generate_post_install_script(&user.user_id.to_string(), &jwt_secret, &hostname);
+    let script_content = generate_post_install_script(
+        &req.ssh_password,
+        &registration_code,
+        "https://spoq-api-production.up.railway.app",
+        &hostname,
+        "https://spoq.dev/releases/conductor",
+    );
 
     // SSH into the VPS and execute the script
     let ssh_config = SshConfig::new(&req.vps_ip, &req.ssh_username, &req.ssh_password)
@@ -287,7 +312,7 @@ pub async fn provision_byovps(
             match ssh.execute_script(&script_content) {
                 Ok(result) => {
                     let success = result.is_success();
-                    let output = if !result.stdout.is_empty() {
+                    let mut output = if !result.stdout.is_empty() {
                         // Truncate output to last 2000 chars for response
                         let stdout = &result.stdout;
                         if stdout.len() > 2000 {
@@ -300,6 +325,37 @@ pub async fn provision_byovps(
                     } else {
                         None
                     };
+
+                    // If output is empty or script failed, try to read the log file
+                    if !success || output.is_none() {
+                        tracing::info!("Attempting to read /var/log/spoq-setup.log from {}", req.vps_ip);
+                        match ssh.execute_command("tail -100 /var/log/spoq-setup.log 2>/dev/null || echo 'Log file not found'") {
+                            Ok(log_result) if !log_result.stdout.is_empty() => {
+                                let log_output = log_result.stdout.trim();
+                                if !log_output.is_empty() && log_output != "Log file not found" {
+                                    output = Some(format!(
+                                        "Script exit code: {}\n\n=== Last 100 lines of /var/log/spoq-setup.log ===\n{}",
+                                        result.exit_code,
+                                        log_output
+                                    ));
+                                    tracing::info!("Successfully retrieved setup log from {}", req.vps_ip);
+                                } else if output.is_none() {
+                                    output = Some(format!("Script failed with exit code {} (no output captured)", result.exit_code));
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to read log file from {}: {}", req.vps_ip, e);
+                                if output.is_none() {
+                                    output = Some(format!("Script failed with exit code {} (log file inaccessible)", result.exit_code));
+                                }
+                            }
+                            _ => {
+                                if output.is_none() {
+                                    output = Some(format!("Script failed with exit code {} (no log output)", result.exit_code));
+                                }
+                            }
+                        }
+                    }
 
                     if success {
                         tracing::info!(

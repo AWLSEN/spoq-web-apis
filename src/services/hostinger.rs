@@ -492,14 +492,12 @@ impl HostingerClient {
 /// * `api_url` - API URL for Conductor to call during registration
 /// * `hostname` - The hostname for this VPS (e.g., "username.spoq.dev")
 /// * `conductor_url` - URL to download the Conductor binary
-/// * `cli_url` - URL to download the Spoq CLI binary
 pub fn generate_post_install_script(
     ssh_password: &str,
     registration_code: &str,
     api_url: &str,
     hostname: &str,
     conductor_url: &str,
-    cli_url: &str,
 ) -> String {
     format!(
         r#"#!/bin/bash
@@ -515,7 +513,6 @@ REGISTRATION_CODE="{registration_code}"
 API_URL="{api_url}"
 HOSTNAME="{hostname}"
 CONDUCTOR_URL="{conductor_url}"
-CLI_URL="{cli_url}"
 
 echo "=== Spoq VPS Provisioning ==="
 
@@ -586,8 +583,7 @@ systemctl enable conductor
 systemctl start conductor
 
 # 8. Download and install Spoq CLI
-curl -sSL "$CLI_URL" -o /usr/local/bin/spoq
-chmod +x /usr/local/bin/spoq
+curl -sSL "https://raw.githubusercontent.com/AWLSEN/spoq-tui/010f851/install.sh" | sh
 
 # 9. Setup welcome message
 cat > /home/spoq/.bashrc << 'BASHRC'
@@ -638,7 +634,6 @@ echo "Caddy: $(systemctl is-active caddy)"
         api_url = api_url,
         hostname = hostname,
         conductor_url = conductor_url,
-        cli_url = cli_url,
     )
 }
 

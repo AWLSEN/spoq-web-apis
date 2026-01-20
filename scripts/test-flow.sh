@@ -86,19 +86,65 @@ api_call() {
                     ACCESS_TOKEN="$new_token"
 
                     # Retry the call with new token
-                    body=$(curl -s -X "$method" "$BASE_URL$endpoint" \
+                    response=$(curl -s -w "\n%{http_code}" -X "$method" "$BASE_URL$endpoint" \
                         -H "Content-Type: application/json" \
                         -H "Authorization: Bearer $new_token" \
                         -d "$data")
+                    http_code=$(echo "$response" | tail -n1)
+                    body=$(echo "$response" | sed '$d')
                 fi
             fi
         fi
 
+        # Check for non-2xx status codes and display error
+        if [[ ! "$http_code" =~ ^2[0-9][0-9]$ ]]; then
+            echo -e "${RED}HTTP Error $http_code${NC}" >&2
+            echo -e "${RED}Endpoint: $method $BASE_URL$endpoint${NC}" >&2
+            echo -e "${RED}Response Body:${NC}" >&2
+
+            # Try to pretty-print JSON error, fallback to raw output
+            if echo "$body" | jq '.' > /dev/null 2>&1; then
+                echo "$body" | jq '.' >&2
+                # Also extract and highlight error message if present
+                local error_msg=$(echo "$body" | jq -r '.error // .message // empty')
+                if [ -n "$error_msg" ]; then
+                    echo -e "${RED}Error Message: $error_msg${NC}" >&2
+                fi
+            else
+                echo "$body" >&2
+            fi
+            echo "" >&2
+        fi
+
         echo "$body"
     else
-        curl -s -X "$method" "$BASE_URL$endpoint" \
+        local response
+        response=$(curl -s -w "\n%{http_code}" -X "$method" "$BASE_URL$endpoint" \
             -H "Content-Type: application/json" \
-            -d "$data"
+            -d "$data")
+
+        local http_code=$(echo "$response" | tail -n1)
+        local body=$(echo "$response" | sed '$d')
+
+        # Check for non-2xx status codes
+        if [[ ! "$http_code" =~ ^2[0-9][0-9]$ ]]; then
+            echo -e "${RED}HTTP Error $http_code${NC}" >&2
+            echo -e "${RED}Endpoint: $method $BASE_URL$endpoint${NC}" >&2
+            echo -e "${RED}Response Body:${NC}" >&2
+
+            if echo "$body" | jq '.' > /dev/null 2>&1; then
+                echo "$body" | jq '.' >&2
+                local error_msg=$(echo "$body" | jq -r '.error // .message // empty')
+                if [ -n "$error_msg" ]; then
+                    echo -e "${RED}Error Message: $error_msg${NC}" >&2
+                fi
+            else
+                echo "$body" >&2
+            fi
+            echo "" >&2
+        fi
+
+        echo "$body"
     fi
 }
 
