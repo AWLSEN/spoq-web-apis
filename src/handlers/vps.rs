@@ -224,6 +224,8 @@ pub async fn provision_vps(
         "https://spoq-api-production.up.railway.app",
         &hostname,
         "https://download.spoq.dev/conductor",
+        &config.jwt_secret,
+        &user.user_id.to_string(),
     );
 
     // Create post-install script on Hostinger

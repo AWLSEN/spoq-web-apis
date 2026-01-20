@@ -492,12 +492,16 @@ impl HostingerClient {
 /// * `api_url` - API URL for Conductor to call during registration
 /// * `hostname` - The hostname for this VPS (e.g., "username.spoq.dev")
 /// * `conductor_url` - URL to download the Conductor binary
+/// * `jwt_secret` - JWT secret for Conductor authentication
+/// * `owner_id` - User UUID who owns this VPS
 pub fn generate_post_install_script(
     ssh_password: &str,
     registration_code: &str,
     api_url: &str,
     hostname: &str,
     conductor_url: &str,
+    jwt_secret: &str,
+    owner_id: &str,
 ) -> String {
     format!(
         r#"#!/bin/bash
@@ -514,6 +518,8 @@ REGISTRATION_CODE="{registration_code}"
 API_URL="{api_url}"
 HOSTNAME="{hostname}"
 CONDUCTOR_URL="{conductor_url}"
+JWT_SECRET="{jwt_secret}"
+OWNER_ID="{owner_id}"
 
 echo "=== Spoq VPS Provisioning ==="
 
@@ -538,6 +544,7 @@ echo "spoq ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/spoq
 chmod 440 /etc/sudoers.d/spoq
 
 # 5. Download and install Conductor (auto-detects platform: x86_64 or aarch64)
+mkdir -p /opt/spoq/bin
 curl -fsSL "$CONDUCTOR_URL" | bash
 # Ensure spoq user can access the binary
 chown -R spoq:spoq /opt/spoq
@@ -572,7 +579,7 @@ cat > /etc/spoq/vps.marker << EOF
 EOF
 
 # 9. Create Conductor systemd service
-cat > /etc/systemd/system/conductor.service << 'SERVICEEOF'
+cat > /etc/systemd/system/conductor.service << SERVICEEOF
 [Unit]
 Description=Spoq Conductor - AI Backend Service
 After=network.target
@@ -586,6 +593,8 @@ ExecStart=/opt/spoq/bin/conductor
 Restart=always
 RestartSec=5
 Environment="RUST_LOG=info"
+Environment="CONDUCTOR_AUTH__JWT_SECRET=$JWT_SECRET"
+Environment="CONDUCTOR_AUTH__OWNER_ID=$OWNER_ID"
 
 [Install]
 WantedBy=multi-user.target
@@ -631,7 +640,9 @@ apt-get update && apt-get install -y caddy
 # 14. Configure Caddy
 cat > /etc/caddy/Caddyfile << EOF
 $HOSTNAME {{
-    reverse_proxy localhost:8080
+    reverse_proxy localhost:8080 {{
+        header_up X-Forwarded-From caddy
+    }}
 }}
 EOF
 
