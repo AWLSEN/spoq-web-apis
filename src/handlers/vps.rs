@@ -14,15 +14,18 @@ use argon2::{
     password_hash::{rand_core::OsRng, PasswordHasher, SaltString},
     Argon2,
 };
+use chrono::Utc;
 use serde::Serialize;
 use sqlx::PgPool;
+use std::time::Duration;
 use uuid::Uuid;
 
 use crate::config::Config;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthenticatedUser;
 use crate::models::{ProvisionVpsRequest, UserVps, VpsDataCenter, VpsPlan, VpsStatusResponse};
-use crate::services::hostinger::{CreateVpsRequest, HostingerClient, VpsSetup};
+use crate::services::hostinger::{generate_post_install_script, CreateVpsRequest, HostingerClient, VpsSetup};
+use crate::services::registration;
 
 /// Response for listing VPS plans
 #[derive(Debug, Serialize)]
@@ -192,9 +195,50 @@ pub async fn provision_vps(
     .execute(pool.get_ref())
     .await?;
 
-    // Create VPS on Hostinger
-    // For now, we'll just update status to provisioning
-    // In production, this would be done in a background job
+    // Generate registration code for Conductor self-registration
+    let registration_code = registration::generate_registration_code();
+    let registration_code_hash = registration::hash_code(&registration_code)
+        .map_err(|e| AppError::Internal(format!("Failed to hash registration code: {}", e)))?;
+    let registration_expires_at = Utc::now() + chrono::Duration::minutes(15);
+
+    // Update VPS record with registration info
+    sqlx::query(
+        r#"UPDATE user_vps
+           SET registration_code_hash = $1,
+               registration_expires_at = $2
+           WHERE id = $3"#,
+    )
+    .bind(&registration_code_hash)
+    .bind(registration_expires_at)
+    .bind(vps_id)
+    .execute(pool.get_ref())
+    .await?;
+
+    // Generate post-install script with registration code
+    let script_content = generate_post_install_script(
+        &req.ssh_password,
+        &registration_code,
+        "https://api.spoq.dev",
+        &hostname,
+        "https://spoq.dev/releases/conductor",
+        "https://spoq.dev/releases/spoq-cli",
+    );
+
+    // Create post-install script on Hostinger
+    let script = hostinger
+        .create_post_install_script(
+            &format!("spoq-setup-{}", vps_id),
+            &script_content,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to create post-install script: {}", e);
+            AppError::Internal(format!("Failed to create post-install script: {}", e))
+        })?;
+
+    let script_id = script.id;
+
+    // Update status to provisioning
     sqlx::query("UPDATE user_vps SET status = 'provisioning' WHERE id = $1")
         .bind(vps_id)
         .execute(pool.get_ref())
@@ -209,7 +253,7 @@ pub async fn provision_vps(
             data_center_id,
             hostname: Some(hostname.clone()),
             password: Some(req.ssh_password.clone()),
-            post_install_script_id: Some(2397), // spoq-minimal-setup script
+            post_install_script_id: Some(script_id),
             enable_backups: Some(true),
             public_key: None,
         },
@@ -218,6 +262,15 @@ pub async fn provision_vps(
 
     match hostinger.create_vps(create_req).await {
         Ok(response) => {
+            // Success: schedule cleanup of post-install script after 30 minutes
+            let hostinger_clone = hostinger.get_ref().clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(30 * 60)).await;
+                if let Err(e) = hostinger_clone.delete_post_install_script(script_id).await {
+                    tracing::warn!("Failed to delete post-install script {}: {}", script_id, e);
+                }
+            });
+
             // Extract VM info from nested response
             let (provider_instance_id, provider_order_id) = if let Some(vm) = response.virtual_machine {
                 (Some(vm.id), vm.subscription_id)
@@ -251,6 +304,11 @@ pub async fn provision_vps(
             }))
         }
         Err(e) => {
+            // Failure: delete script immediately to avoid orphans
+            if let Err(del_err) = hostinger.delete_post_install_script(script_id).await {
+                tracing::warn!("Failed to delete post-install script {} after VPS creation failure: {}", script_id, del_err);
+            }
+
             // Mark as failed
             sqlx::query("UPDATE user_vps SET status = 'failed' WHERE id = $1")
                 .bind(vps_id)
