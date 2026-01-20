@@ -4,8 +4,10 @@
 //! - `auth` - GitHub OAuth and device flow authentication handlers
 //! - `health` - Health check endpoint
 //! - `vps` - VPS provisioning and management handlers
+//! - `byovps` - BYOVPS (Bring Your Own VPS) provisioning handlers
 
 pub mod auth;
+pub mod byovps;
 pub mod health;
 pub mod vps;
 
@@ -22,3 +24,4 @@ pub use vps::{
     start_vps, stop_vps, DataCentersResponse, ProvisionResponse, ResetPasswordRequest,
     SuccessResponse, VpsPlansResponse,
 };
+pub use byovps::{provision_byovps, ProvisionByovpsRequest, ProvisionByovpsResponse};

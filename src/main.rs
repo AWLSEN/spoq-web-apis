@@ -16,6 +16,8 @@ use spoq_web_apis::handlers::{
     // VPS handlers
     get_vps_status, list_datacenters, list_plans, provision_vps, reset_password, restart_vps,
     start_vps, stop_vps,
+    // BYOVPS handlers
+    provision_byovps,
 };
 use spoq_web_apis::middleware::create_rate_limiter;
 use spoq_web_apis::services::{CloudflareService, HostingerClient};
@@ -127,6 +129,12 @@ async fn main() -> std::io::Result<()> {
         if let Some(ref cloudflare) = cloudflare_client {
             app = app.app_data(cloudflare.clone());
         }
+
+        // Add BYOVPS routes (always available - doesn't require Hostinger)
+        app = app.service(
+            web::scope("/api/byovps")
+                .route("/provision", web::post().to(provision_byovps)),
+        );
 
         // Add VPS routes if Hostinger is configured
         if let Some(ref hostinger) = hostinger_client {
