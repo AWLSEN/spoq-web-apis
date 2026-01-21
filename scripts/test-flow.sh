@@ -454,26 +454,121 @@ if [ "$TEST_MODE" == "byovps" ]; then
 
     echo -e "Calling BYOVPS provision endpoint..."
 
-    # Call the BYOVPS provision endpoint
-    BYOVPS_RESULT=$(api_call POST "/api/byovps/provision" "{\"vps_ip\":\"$VPS_IP\",\"ssh_username\":\"$SSH_USERNAME\",\"ssh_password\":\"$SSH_PASSWORD\"}" "$ACCESS_TOKEN")
+    # Create temporary file for API response
+    PROVISION_RESPONSE_FILE=$(mktemp)
+
+    # Launch API call in background
+    (api_call POST "/api/byovps/provision" "{\"vps_ip\":\"$VPS_IP\",\"ssh_username\":\"$SSH_USERNAME\",\"ssh_password\":\"$SSH_PASSWORD\"}" "$ACCESS_TOKEN" > "$PROVISION_RESPONSE_FILE" 2>&1) &
+    PROVISION_PID=$!
+
+    # Show spinner while provisioning
+    show_spinner "Provisioning BYOVPS..." $PROVISION_PID
+
+    # Wait for background process and get exit code
+    wait $PROVISION_PID
+    PROVISION_EXIT_CODE=$?
+
+    # Read the response
+    BYOVPS_RESULT=$(cat "$PROVISION_RESPONSE_FILE")
+    rm -f "$PROVISION_RESPONSE_FILE"
 
     # Check if the request was successful
     if echo "$BYOVPS_RESULT" | jq -e '.hostname' > /dev/null 2>&1; then
         # Display hostname
         HOSTNAME=$(echo "$BYOVPS_RESULT" | jq -r '.hostname')
-        SCRIPT_STATUS=$(echo "$BYOVPS_RESULT" | jq -r '.install_script.status // empty')
 
-        # Check if script was successful
-        if [ "$SCRIPT_STATUS" == "success" ]; then
-            echo -e "${GREEN}✓ BYOVPS provisioning successful!${NC}"
-        else
-            echo -e "${YELLOW}⚠ BYOVPS provisioning completed with script errors${NC}"
-        fi
+        echo -e "${GREEN}✓ BYOVPS provision request accepted${NC}"
+        echo -e "${BLUE}Hostname:${NC} ${GREEN}$HOSTNAME${NC}"
         echo ""
 
-        echo -e "${BLUE}Hostname:${NC} ${GREEN}$HOSTNAME${NC}"
+        # Start status polling loop
+        echo -e "${YELLOW}Polling VPS status until ready...${NC}"
+        echo ""
 
-        # Display JWT credentials
+        POLL_COUNT=0
+        MAX_POLLS=120  # 10 minutes timeout (120 * 5 seconds)
+        POLL_INTERVAL=5
+        FINAL_STATUS=""
+
+        while [ $POLL_COUNT -lt $MAX_POLLS ]; do
+            # Call status endpoint
+            STATUS_RESPONSE=$(api_call GET "/api/vps/status" "" "$ACCESS_TOKEN")
+
+            # Parse status field
+            CURRENT_STATUS=$(echo "$STATUS_RESPONSE" | jq -r '.status // "unknown"')
+            TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+
+            # Display current status with timestamp
+            case "$CURRENT_STATUS" in
+                "pending")
+                    echo -e "  [${TIMESTAMP}] Status: ${YELLOW}pending${NC} - Waiting to start..."
+                    ;;
+                "provisioning")
+                    echo -e "  [${TIMESTAMP}] Status: ${YELLOW}provisioning${NC} - Setting up VPS..."
+                    ;;
+                "registering")
+                    echo -e "  [${TIMESTAMP}] Status: ${YELLOW}registering${NC} - Registering with Spoq..."
+                    ;;
+                "configuring")
+                    echo -e "  [${TIMESTAMP}] Status: ${YELLOW}configuring${NC} - Configuring services..."
+                    ;;
+                "ready")
+                    echo -e "  [${TIMESTAMP}] Status: ${GREEN}ready${NC} - VPS is ready!"
+                    FINAL_STATUS="ready"
+                    break
+                    ;;
+                "failed")
+                    echo -e "  [${TIMESTAMP}] Status: ${RED}failed${NC} - Installation failed"
+                    FINAL_STATUS="failed"
+                    break
+                    ;;
+                *)
+                    echo -e "  [${TIMESTAMP}] Status: ${YELLOW}$CURRENT_STATUS${NC}"
+                    ;;
+            esac
+
+            POLL_COUNT=$((POLL_COUNT + 1))
+            sleep $POLL_INTERVAL
+        done
+
+        echo ""
+
+        # Check final outcome
+        if [ "$FINAL_STATUS" == "ready" ]; then
+            echo -e "${GREEN}✓ VPS installation completed successfully!${NC}"
+            echo ""
+
+            # Display health check URL
+            VPS_IP_FROM_STATUS=$(echo "$STATUS_RESPONSE" | jq -r '.ip_address // empty')
+            if [ -n "$VPS_IP_FROM_STATUS" ] && [ "$VPS_IP_FROM_STATUS" != "null" ]; then
+                echo -e "${BLUE}Health Check URL:${NC} ${GREEN}http://$VPS_IP_FROM_STATUS:3000/health${NC}"
+            else
+                echo -e "${BLUE}Health Check URL:${NC} ${GREEN}http://$VPS_IP:3000/health${NC}"
+            fi
+        elif [ "$FINAL_STATUS" == "failed" ]; then
+            echo -e "${RED}✗ VPS installation failed${NC}"
+            echo ""
+
+            # Try to get error details from status response
+            ERROR_DETAIL=$(echo "$STATUS_RESPONSE" | jq -r '.error // .message // empty')
+            if [ -n "$ERROR_DETAIL" ] && [ "$ERROR_DETAIL" != "null" ]; then
+                echo -e "${RED}Error: $ERROR_DETAIL${NC}"
+            fi
+
+            echo -e "${YELLOW}Full status response:${NC}"
+            echo "$STATUS_RESPONSE" | jq '.'
+            exit 1
+        else
+            # Timeout
+            echo -e "${RED}✗ Timeout waiting for VPS to become ready${NC}"
+            echo -e "${YELLOW}Last known status: $CURRENT_STATUS${NC}"
+            echo ""
+            echo -e "${YELLOW}The VPS may still be configuring. You can check status manually:${NC}"
+            echo -e "  curl -H 'Authorization: Bearer \$TOKEN' $BASE_URL/api/vps/status"
+            exit 1
+        fi
+
+        # Display JWT credentials from provision response
         echo ""
         echo -e "${BLUE}JWT Credentials:${NC}"
         JWT_TOKEN=$(echo "$BYOVPS_RESULT" | jq -r '.credentials.jwt_token // empty')
@@ -486,16 +581,17 @@ if [ "$TEST_MODE" == "byovps" ]; then
             echo -e "  ${RED}No JWT credentials in response${NC}"
         fi
 
-        # Display install script status
+        # Display install script status from provision response
         echo ""
         echo -e "${BLUE}Install Script:${NC}"
+        SCRIPT_STATUS=$(echo "$BYOVPS_RESULT" | jq -r '.install_script.status // empty')
         SCRIPT_OUTPUT=$(echo "$BYOVPS_RESULT" | jq -r '.install_script.output // empty')
 
         if [ -n "$SCRIPT_STATUS" ] && [ "$SCRIPT_STATUS" != "null" ]; then
             if [ "$SCRIPT_STATUS" == "success" ]; then
-                echo -e "  Status: ${GREEN}✓ $SCRIPT_STATUS${NC}"
+                echo -e "  Status: ${GREEN}$SCRIPT_STATUS${NC}"
             else
-                echo -e "  Status: ${RED}✗ $SCRIPT_STATUS${NC}"
+                echo -e "  Status: ${RED}$SCRIPT_STATUS${NC}"
             fi
 
             if [ -n "$SCRIPT_OUTPUT" ] && [ "$SCRIPT_OUTPUT" != "null" ] && [ "$SCRIPT_OUTPUT" != "" ]; then
@@ -504,18 +600,6 @@ if [ "$TEST_MODE" == "byovps" ]; then
             fi
         else
             echo -e "  ${YELLOW}No install script status in response${NC}"
-        fi
-
-        # Display full JSON response for debugging
-        echo ""
-        echo -e "${BLUE}Full Response:${NC}"
-        echo "$BYOVPS_RESULT" | jq '.'
-
-        # Exit with error code if script failed
-        if [ "$SCRIPT_STATUS" != "success" ]; then
-            echo ""
-            echo -e "${RED}Installation script failed. Check the output above for details.${NC}"
-            exit 1
         fi
 
     else
