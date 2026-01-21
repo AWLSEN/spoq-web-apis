@@ -464,9 +464,8 @@ if [ "$TEST_MODE" == "byovps" ]; then
     # Show spinner while provisioning
     show_spinner "Provisioning BYOVPS..." $PROVISION_PID
 
-    # Wait for background process and get exit code
+    # Wait for background process
     wait $PROVISION_PID
-    PROVISION_EXIT_CODE=$?
 
     # Read the response
     BYOVPS_RESULT=$(cat "$PROVISION_RESPONSE_FILE")
