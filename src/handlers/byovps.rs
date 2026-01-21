@@ -190,6 +190,23 @@ pub async fn provision_byovps(
         ));
     }
 
+    // Clean up any stale failed or terminated VPS records for this user
+    // This handles retries after failed provisioning attempts
+    let deleted = sqlx::query(
+        "DELETE FROM user_vps WHERE user_id = $1 AND status IN ('failed', 'terminated')",
+    )
+    .bind(user.user_id)
+    .execute(pool.get_ref())
+    .await?;
+
+    if deleted.rows_affected() > 0 {
+        tracing::info!(
+            "Cleaned up {} stale VPS record(s) for user {}",
+            deleted.rows_affected(),
+            user.user_id
+        );
+    }
+
     // Get the user's username for hostname generation
     let username: Option<String> =
         sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
