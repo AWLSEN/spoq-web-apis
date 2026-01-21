@@ -162,6 +162,48 @@ save_credentials() {
     echo -e "${GREEN}Credentials saved to $CREDENTIALS_FILE${NC}"
 }
 
+# Spinner function for loading animations
+# Usage: show_spinner <message> <pid>
+# Displays an animated spinner while the process with the given PID is running
+show_spinner() {
+    local message=$1
+    local pid=$2
+    local spinner_chars="⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏"
+    local fallback_chars=". .. ... ...."
+
+    # Test if spinner chars work in this terminal
+    local use_spinner=true
+    if ! printf "⠋" 2>/dev/null | grep -q "⠋" 2>/dev/null; then
+        use_spinner=false
+    fi
+
+    local chars
+    if [ "$use_spinner" = true ]; then
+        chars=($spinner_chars)
+    else
+        chars=($fallback_chars)
+    fi
+
+    local i=0
+    local chars_count=${#chars[@]}
+
+    # Hide cursor
+    tput civis 2>/dev/null || true
+
+    while kill -0 "$pid" 2>/dev/null; do
+        local char="${chars[$i]}"
+        printf "\r${BLUE}%s${NC} %s" "$char" "$message"
+        i=$(( (i + 1) % chars_count ))
+        sleep 0.1
+    done
+
+    # Clear the spinner line
+    printf "\r%*s\r" $((${#message} + 10)) ""
+
+    # Show cursor
+    tput cnorm 2>/dev/null || true
+}
+
 # ============================================================================
 # Health Check (All modes)
 # ============================================================================
