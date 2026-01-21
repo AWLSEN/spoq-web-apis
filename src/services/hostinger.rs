@@ -544,8 +544,25 @@ echo "spoq ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/spoq
 chmod 440 /etc/sudoers.d/spoq
 
 # 5. Download and install Conductor (auto-detects platform: x86_64 or aarch64)
+echo "Creating /opt/spoq/bin directory..."
 mkdir -p /opt/spoq/bin
-curl -fsSL "$CONDUCTOR_URL" | bash
+
+echo "Checking disk space..."
+df -h /opt
+
+echo "Checking permissions..."
+ls -ld /opt/spoq/bin
+
+echo "Downloading conductor install script..."
+if ! curl -fsSL "$CONDUCTOR_URL" | bash; then
+    echo "ERROR: Conductor installation failed"
+    echo "Disk space:"
+    df -h
+    echo "Directory permissions:"
+    ls -la /opt/spoq/
+    exit 1
+fi
+
 # Ensure spoq user can access the binary
 chown -R spoq:spoq /opt/spoq
 
