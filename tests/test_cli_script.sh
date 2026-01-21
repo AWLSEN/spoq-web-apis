@@ -153,11 +153,39 @@ else
     fail_test "Missing color output"
 fi
 
-# Check for menu system
+# Check for menu system with 2 options
 if grep -q "Select a flow to test:" "$SCRIPT_PATH"; then
     pass_test "Has interactive menu"
 else
     fail_test "Missing interactive menu"
+fi
+
+# Check for menu option 1: BYOVPS
+if grep -q '1).*BYOVPS' "$SCRIPT_PATH"; then
+    pass_test "Menu has option [1] BYOVPS"
+else
+    fail_test "Missing menu option [1] BYOVPS"
+fi
+
+# Check for menu option 2: Managed VPS
+if grep -q '2).*Managed VPS' "$SCRIPT_PATH"; then
+    pass_test "Menu has option [2] Managed VPS"
+else
+    fail_test "Missing menu option [2] Managed VPS"
+fi
+
+# Verify no option 3 exists (Test BYOVPS Provisioning should be removed)
+if ! grep -q '\[3\]' "$SCRIPT_PATH"; then
+    pass_test "No option [3] found (removed as expected)"
+else
+    fail_test "Option [3] should be removed"
+fi
+
+# Verify choice validation accepts only 1-2
+if grep -q 'Enter choice \[1-2\]' "$SCRIPT_PATH"; then
+    pass_test "Choice validation is [1-2]"
+else
+    fail_test "Choice validation should be [1-2]"
 fi
 
 # Check for progress indicators
@@ -205,6 +233,14 @@ for func in "${functions[@]}"; do
         fail_test "Missing helper function: $func"
     fi
 done
+
+# Check for show_spinner function
+if grep -q "^show_spinner()" "$SCRIPT_PATH" || grep -q "^show_spinner ()" "$SCRIPT_PATH"; then
+    pass_test "Has spinner function: show_spinner"
+else
+    fail_test "Missing spinner function: show_spinner"
+fi
+
 echo ""
 
 # Test 10: Configuration and constants
@@ -284,6 +320,13 @@ if grep -q "install_script.*output" "$SCRIPT_PATH"; then
     pass_test "Shows install script output"
 else
     fail_test "Missing install script output"
+fi
+
+# Check for status polling loop in BYOVPS mode
+if grep -q "Polling VPS status" "$SCRIPT_PATH" && grep -q "while.*POLL_COUNT.*MAX_POLLS" "$SCRIPT_PATH"; then
+    pass_test "Has status polling loop in BYOVPS mode"
+else
+    fail_test "Missing status polling loop"
 fi
 echo ""
 
