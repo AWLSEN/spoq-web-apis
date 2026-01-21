@@ -232,8 +232,14 @@ else
 fi
 echo ""
 
-# Test 11: Three flow modes
+# Test 11: Two flow modes
 echo -e "${YELLOW}[Flow Modes]${NC}"
+
+if grep -q 'TEST_MODE="byovps"' "$SCRIPT_PATH"; then
+    pass_test "Has 'byovps' flow mode"
+else
+    fail_test "Missing 'byovps' flow mode"
+fi
 
 if grep -q 'TEST_MODE="full"' "$SCRIPT_PATH"; then
     pass_test "Has 'full' flow mode"
@@ -241,16 +247,11 @@ else
     fail_test "Missing 'full' flow mode"
 fi
 
-if grep -q 'TEST_MODE="status"' "$SCRIPT_PATH"; then
-    pass_test "Has 'status' flow mode"
+# Verify status mode was removed
+if ! grep -q 'TEST_MODE="status"' "$SCRIPT_PATH"; then
+    pass_test "Status mode removed (as expected)"
 else
-    fail_test "Missing 'status' flow mode"
-fi
-
-if grep -q 'TEST_MODE="byovps"' "$SCRIPT_PATH"; then
-    pass_test "Has 'byovps' flow mode"
-else
-    fail_test "Missing 'byovps' flow mode"
+    fail_test "Status mode should be removed"
 fi
 echo ""
 

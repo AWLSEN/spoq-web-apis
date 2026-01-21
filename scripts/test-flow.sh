@@ -29,23 +29,19 @@ echo ""
 
 # Show menu
 echo -e "${YELLOW}Select a flow to test:${NC}"
-echo -e "  ${GREEN}1)${NC} Full Flow (Device Auth + VPS Provision)"
-echo -e "  ${GREEN}2)${NC} VPS Status Only"
-echo -e "  ${GREEN}3)${NC} Test BYOVPS Provisioning"
+echo -e "  ${GREEN}1)${NC} BYOVPS (Bring Your Own VPS)"
+echo -e "  ${GREEN}2)${NC} Managed VPS (Hostinger)"
 echo ""
-echo -n "Enter choice [1-3]: "
+echo -n "Enter choice [1-2]: "
 read -r MENU_CHOICE
 echo ""
 
 case $MENU_CHOICE in
     1)
-        TEST_MODE="full"
+        TEST_MODE="byovps"
         ;;
     2)
-        TEST_MODE="status"
-        ;;
-    3)
-        TEST_MODE="byovps"
+        TEST_MODE="full"
         ;;
     *)
         echo -e "${RED}Invalid choice. Exiting.${NC}"
@@ -308,9 +304,9 @@ echo -e "${GREEN}✓ Authenticated with access token${NC}"
 echo ""
 
 # ============================================================================
-# VPS Status Check (Full and Status modes)
+# VPS Status Check (Full mode only)
 # ============================================================================
-if [ "$TEST_MODE" == "full" ] || [ "$TEST_MODE" == "status" ]; then
+if [ "$TEST_MODE" == "full" ]; then
     echo -e "${YELLOW}[Check VPS Status]${NC}"
     VPS_STATUS=$(api_call GET "/api/vps/status" "" "$ACCESS_TOKEN")
 
