@@ -544,14 +544,26 @@ echo "spoq ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/spoq
 chmod 440 /etc/sudoers.d/spoq
 
 # 5. Download and install Conductor (auto-detects platform: x86_64 or aarch64)
+echo "Preparing for Conductor installation..."
+
+# Stop any running conductor service from previous attempts
+if systemctl is-active --quiet conductor; then
+    echo "Stopping existing conductor service..."
+    systemctl stop conductor || true
+fi
+
+# Clean up any existing installation to ensure fresh install
+if [ -d "/opt/spoq" ]; then
+    echo "Removing existing /opt/spoq directory for clean install..."
+    rm -rf /opt/spoq
+fi
+
+# Create directory with root ownership
 echo "Creating /opt/spoq/bin directory..."
 mkdir -p /opt/spoq/bin
 
 echo "Checking disk space..."
 df -h /opt
-
-echo "Checking permissions..."
-ls -ld /opt/spoq/bin
 
 echo "Downloading conductor install script..."
 if ! curl -fsSL "$CONDUCTOR_URL" | bash; then
@@ -559,11 +571,12 @@ if ! curl -fsSL "$CONDUCTOR_URL" | bash; then
     echo "Disk space:"
     df -h
     echo "Directory permissions:"
-    ls -la /opt/spoq/
+    ls -la /opt/spoq/ || echo "/opt/spoq does not exist"
     exit 1
 fi
 
-# Ensure spoq user can access the binary
+# Change ownership to spoq user after successful installation
+echo "Setting spoq ownership..."
 chown -R spoq:spoq /opt/spoq
 
 # 6. Write registration code (Conductor will self-register on first boot)
