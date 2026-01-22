@@ -22,6 +22,8 @@ use spoq_web_apis::handlers::{
     create_checkout_session, get_session_status,
     // Admin handlers (TEMPORARY - NO AUTH)
     cleanup_all_vps, cleanup_user_vps, list_all_vps,
+    // Webhook handlers
+    stripe_webhook,
 };
 use spoq_web_apis::handlers::internal::register_conductor;
 use spoq_web_apis::middleware::{create_rate_limiter, create_internal_rate_limiter};
@@ -157,6 +159,12 @@ async fn main() -> std::io::Result<()> {
                 web::scope("/api/payment")
                     .route("/create-checkout-session", web::post().to(create_checkout_session))
                     .route("/session-status/{session_id}", web::get().to(get_session_status)),
+            );
+
+            // Add webhook routes if Stripe is configured
+            app = app.service(
+                web::scope("/webhooks")
+                    .route("/stripe", web::post().to(stripe_webhook)),
             );
         }
 

@@ -7,6 +7,7 @@
 //! - `vps` - VPS provisioning and management handlers
 //! - `byovps` - BYOVPS (Bring Your Own VPS) provisioning handlers
 //! - `admin` - Temporary admin endpoints (NO AUTH - remove after cleanup!)
+//! - `webhooks` - Stripe webhook handlers for subscription lifecycle
 
 pub mod admin;
 pub mod auth;
@@ -15,6 +16,7 @@ pub mod health;
 pub mod internal;
 pub mod payment;
 pub mod vps;
+pub mod webhooks;
 
 // Re-export commonly used types
 pub use auth::{
@@ -35,3 +37,4 @@ pub use payment::{
     create_checkout_session, get_session_status, CheckoutSessionResponse, CreateCheckoutRequest,
     PaymentStatusResponse,
 };
+pub use webhooks::stripe_webhook;

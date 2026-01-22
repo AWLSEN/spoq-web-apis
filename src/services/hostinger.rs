@@ -398,6 +398,37 @@ impl HostingerClient {
             .await
     }
 
+    /// Delete/Cancel a VPS instance
+    pub async fn delete_vps(&self, vm_id: i64) -> Result<(), HostingerError> {
+        let url = format!(
+            "{}/api/vps/v1/virtual-machines/{}",
+            HOSTINGER_API_BASE, vm_id
+        );
+        let response = self
+            .client
+            .delete(&url)
+            .bearer_auth(&self.api_key)
+            .send()
+            .await?;
+
+        let status = response.status().as_u16();
+        if !response.status().is_success() {
+            let error_body: ApiErrorResponse = response.json().await.unwrap_or(ApiErrorResponse {
+                message: Some("Unknown error".to_string()),
+                error: None,
+            });
+            return Err(HostingerError::Api {
+                status,
+                message: error_body
+                    .message
+                    .or(error_body.error)
+                    .unwrap_or_else(|| "Unknown error".to_string()),
+            });
+        }
+
+        Ok(())
+    }
+
     // -------------------------------------------------------------------------
     // Post-Install Scripts
     // -------------------------------------------------------------------------
