@@ -58,6 +58,7 @@ fn test_provision_byovps_request_with_special_chars_in_password() {
 
 #[test]
 fn test_provision_byovps_response_success() {
+    use spoq_web_apis::handlers::byovps::{JwtCredentials, InstallScript};
     use uuid::Uuid;
 
     let response = ProvisionByovpsResponse {
@@ -65,19 +66,26 @@ fn test_provision_byovps_response_success() {
         hostname: "alice.spoq.dev".to_string(),
         status: "ready".to_string(),
         message: "BYOVPS provisioned successfully. Your VPS is accessible at alice.spoq.dev".to_string(),
-        script_success: true,
-        script_output: Some("Installation completed successfully".to_string()),
+        credentials: JwtCredentials {
+            jwt_token: "test-jwt-token".to_string(),
+            expires_at: "2026-01-23T00:00:00Z".to_string(),
+        },
+        install_script: InstallScript {
+            status: "success".to_string(),
+            output: Some("Installation completed successfully".to_string()),
+        },
     };
 
     let json = serde_json::to_string(&response).unwrap();
     assert!(json.contains("alice.spoq.dev"));
     assert!(json.contains("ready"));
-    assert!(json.contains("\"script_success\":true"));
+    assert!(json.contains("\"status\":\"success\""));
     assert!(json.contains("Installation completed successfully"));
 }
 
 #[test]
 fn test_provision_byovps_response_failure() {
+    use spoq_web_apis::handlers::byovps::{JwtCredentials, InstallScript};
     use uuid::Uuid;
 
     let response = ProvisionByovpsResponse {
@@ -85,18 +93,25 @@ fn test_provision_byovps_response_failure() {
         hostname: "bob.spoq.dev".to_string(),
         status: "failed".to_string(),
         message: "BYOVPS provisioning failed. Check the script output for details.".to_string(),
-        script_success: false,
-        script_output: Some("SSH connection failed: Connection refused".to_string()),
+        credentials: JwtCredentials {
+            jwt_token: "test-jwt-token".to_string(),
+            expires_at: "2026-01-23T00:00:00Z".to_string(),
+        },
+        install_script: InstallScript {
+            status: "failed".to_string(),
+            output: Some("SSH connection failed: Connection refused".to_string()),
+        },
     };
 
     let json = serde_json::to_string(&response).unwrap();
     assert!(json.contains("failed"));
-    assert!(json.contains("\"script_success\":false"));
+    assert!(json.contains("\"status\":\"failed\""));
     assert!(json.contains("SSH connection failed"));
 }
 
 #[test]
 fn test_provision_byovps_response_with_null_output() {
+    use spoq_web_apis::handlers::byovps::{JwtCredentials, InstallScript};
     use uuid::Uuid;
 
     let response = ProvisionByovpsResponse {
@@ -104,12 +119,18 @@ fn test_provision_byovps_response_with_null_output() {
         hostname: "test.spoq.dev".to_string(),
         status: "provisioning".to_string(),
         message: "Provisioning in progress".to_string(),
-        script_success: false,
-        script_output: None,
+        credentials: JwtCredentials {
+            jwt_token: "test-jwt-token".to_string(),
+            expires_at: "2026-01-23T00:00:00Z".to_string(),
+        },
+        install_script: InstallScript {
+            status: "pending".to_string(),
+            output: None,
+        },
     };
 
     let json = serde_json::to_string(&response).unwrap();
-    assert!(json.contains("\"script_output\":null"));
+    assert!(json.contains("\"output\":null"));
 }
 
 // ============================================================================
@@ -159,7 +180,15 @@ fn test_byovps_script_generation_basic() {
     let jwt_secret = "byovps-jwt-secret-xyz";
     let hostname = "alice.spoq.dev";
 
-    let script = generate_post_install_script(user_id, jwt_secret, hostname);
+    let script = generate_post_install_script(
+        "TestPassword123!",
+        "ABC123",
+        "https://api.spoq.dev",
+        hostname,
+        "https://download.spoq.dev/conductor",
+        jwt_secret,
+        user_id,
+    );
 
     // Verify all required components are injected
     assert!(script.contains(&format!("OWNER_ID=\"{}\"", user_id)));
@@ -170,9 +199,13 @@ fn test_byovps_script_generation_basic() {
 #[test]
 fn test_byovps_script_includes_conductor_setup() {
     let script = generate_post_install_script(
-        "user-uuid",
-        "jwt-secret",
+        "TestPassword123!",
+        "ABC123",
+        "https://api.spoq.dev",
         "bob.spoq.dev",
+        "https://download.spoq.dev/conductor",
+        "jwt-secret",
+        "user-uuid",
     );
 
     // Verify Conductor is downloaded
@@ -187,24 +220,32 @@ fn test_byovps_script_includes_conductor_setup() {
 #[test]
 fn test_byovps_script_includes_cli_setup() {
     let script = generate_post_install_script(
-        "user-uuid",
-        "jwt-secret",
+        "TestPassword123!",
+        "ABC123",
+        "https://api.spoq.dev",
         "charlie.spoq.dev",
+        "https://download.spoq.dev/conductor",
+        "jwt-secret",
+        "user-uuid",
     );
 
     // Verify CLI is downloaded
     assert!(script.contains("https://download.spoq.dev/cli"));
 
-    // Verify CLI is installed in PATH
-    assert!(script.contains("/usr/local/bin/") || script.contains("chmod +x"));
+    // Verify CLI install command is present
+    assert!(script.contains("curl -fsSL https://download.spoq.dev/cli | bash"));
 }
 
 #[test]
 fn test_byovps_script_includes_caddy_reverse_proxy() {
     let script = generate_post_install_script(
-        "user-uuid",
-        "jwt-secret",
+        "TestPassword123!",
+        "ABC123",
+        "https://api.spoq.dev",
         "diana.spoq.dev",
+        "https://download.spoq.dev/conductor",
+        "jwt-secret",
+        "user-uuid",
     );
 
     // Verify Caddy is installed
@@ -220,25 +261,34 @@ fn test_byovps_script_includes_caddy_reverse_proxy() {
 #[test]
 fn test_byovps_script_includes_firewall_setup() {
     let script = generate_post_install_script(
-        "user-uuid",
-        "jwt-secret",
+        "TestPassword123!",
+        "ABC123",
+        "https://api.spoq.dev",
         "test.spoq.dev",
+        "https://download.spoq.dev/conductor",
+        "jwt-secret",
+        "user-uuid",
     );
 
     // Verify UFW firewall rules
     assert!(script.contains("ufw allow 22")); // SSH
     assert!(script.contains("ufw allow 80")); // HTTP
     assert!(script.contains("ufw allow 443")); // HTTPS
-    assert!(script.contains("ufw allow 8080")); // Conductor
+    // Note: Conductor runs on localhost:8080 behind Caddy reverse proxy
+    // so port 8080 should NOT be exposed to the internet
     assert!(script.contains("ufw --force enable"));
 }
 
 #[test]
 fn test_byovps_script_creates_vps_marker() {
     let script = generate_post_install_script(
-        "user-uuid",
-        "jwt-secret",
+        "TestPassword123!",
+        "ABC123",
+        "https://api.spoq.dev",
         "marker.spoq.dev",
+        "https://download.spoq.dev/conductor",
+        "jwt-secret",
+        "user-uuid",
     );
 
     // Verify marker file creation
@@ -250,15 +300,23 @@ fn test_byovps_script_creates_vps_marker() {
 #[test]
 fn test_byovps_script_different_users_get_different_scripts() {
     let script1 = generate_post_install_script(
-        "user-1-id",
-        "secret-1",
+        "TestPassword123!",
+        "ABC123",
+        "https://api.spoq.dev",
         "user1.spoq.dev",
+        "https://download.spoq.dev/conductor",
+        "secret-1",
+        "user-1-id",
     );
 
     let script2 = generate_post_install_script(
-        "user-2-id",
-        "secret-2",
+        "TestPassword456!",
+        "DEF456",
+        "https://api.spoq.dev",
         "user2.spoq.dev",
+        "https://download.spoq.dev/conductor",
+        "secret-2",
+        "user-2-id",
     );
 
     // Scripts should be different

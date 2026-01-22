@@ -117,16 +117,21 @@ fn test_post_install_script_caddy_setup() {
 #[test]
 fn test_post_install_script_firewall() {
     let script = generate_post_install_script(
-        "user-uuid",
-        "jwt-secret",
+        "TestPassword123!",
+        "ABC123",
+        "https://api.spoq.dev",
         "test.spoq.dev",
+        "https://download.spoq.dev/conductor",
+        "jwt-secret",
+        "user-uuid",
     );
 
     // Verify firewall rules
     assert!(script.contains("ufw allow 22"), "Should allow SSH");
     assert!(script.contains("ufw allow 80"), "Should allow HTTP for Let's Encrypt");
     assert!(script.contains("ufw allow 443"), "Should allow HTTPS");
-    assert!(script.contains("ufw allow 8080"), "Should allow Conductor direct access");
+    // Note: Conductor runs on localhost:8080 behind Caddy reverse proxy
+    // Port 8080 should NOT be exposed to the internet for security
     assert!(script.contains("ufw --force enable"), "Should enable firewall");
 }
 
@@ -134,9 +139,13 @@ fn test_post_install_script_firewall() {
 #[test]
 fn test_post_install_script_vps_marker() {
     let script = generate_post_install_script(
-        "user-uuid",
-        "jwt-secret",
+        "TestPassword123!",
+        "ABC123",
+        "https://api.spoq.dev",
         "marker.spoq.dev",
+        "https://download.spoq.dev/conductor",
+        "jwt-secret",
+        "user-uuid",
     );
 
     // Verify marker file creation
@@ -162,9 +171,13 @@ fn test_post_install_script_vps_marker() {
 #[test]
 fn test_post_install_script_error_handling() {
     let script = generate_post_install_script(
-        "user-uuid",
-        "jwt-secret",
+        "TestPassword123!",
+        "ABC123",
+        "https://api.spoq.dev",
         "test.spoq.dev",
+        "https://download.spoq.dev/conductor",
+        "jwt-secret",
+        "user-uuid",
     );
 
     // Verify set -e for fail-fast behavior
@@ -184,15 +197,23 @@ fn test_post_install_script_error_handling() {
 #[test]
 fn test_post_install_script_uniqueness() {
     let script1 = generate_post_install_script(
-        "user-1-uuid",
-        "secret-1",
+        "TestPassword123!",
+        "ABC123",
+        "https://api.spoq.dev",
         "user1.spoq.dev",
+        "https://download.spoq.dev/conductor",
+        "secret-1",
+        "user-1-uuid",
     );
 
     let script2 = generate_post_install_script(
-        "user-2-uuid",
-        "secret-2",
+        "TestPassword123!",
+        "DEF456",
+        "https://api.spoq.dev",
         "user2.spoq.dev",
+        "https://download.spoq.dev/conductor",
+        "secret-2",
+        "user-2-uuid",
     );
 
     // Scripts should be different
@@ -212,9 +233,13 @@ fn test_post_install_script_uniqueness() {
 #[test]
 fn test_post_install_script_no_cross_contamination() {
     let script = generate_post_install_script(
-        "my-user-id",
-        "my-secret",
+        "TestPassword123!",
+        "ABC123",
+        "https://api.spoq.dev",
         "myhost.spoq.dev",
+        "https://download.spoq.dev/conductor",
+        "my-secret",
+        "my-user-id",
     );
 
     // Should not contain any placeholder text
@@ -237,7 +262,15 @@ fn test_post_install_script_hostname_in_caddy() {
     ];
 
     for hostname in hostnames {
-        let script = generate_post_install_script("uid", "secret", hostname);
+        let script = generate_post_install_script(
+            "TestPassword123!",
+            "ABC123",
+            "https://api.spoq.dev",
+            hostname,
+            "https://download.spoq.dev/conductor",
+            "secret",
+            "uid",
+        );
 
         // Hostname should be in the HOSTNAME variable
         assert!(
@@ -258,9 +291,13 @@ fn test_post_install_script_hostname_in_caddy() {
 #[test]
 fn test_post_install_script_welcome_message() {
     let script = generate_post_install_script(
-        "user-uuid",
-        "jwt-secret",
+        "TestPassword123!",
+        "ABC123",
+        "https://api.spoq.dev",
         "welcome.spoq.dev",
+        "https://download.spoq.dev/conductor",
+        "jwt-secret",
+        "user-uuid",
     );
 
     assert!(
@@ -277,9 +314,13 @@ fn test_post_install_script_welcome_message() {
 #[test]
 fn test_post_install_script_downloads_binaries() {
     let script = generate_post_install_script(
-        "user-uuid",
-        "jwt-secret",
+        "TestPassword123!",
+        "ABC123",
+        "https://api.spoq.dev",
         "download.spoq.dev",
+        "https://download.spoq.dev/conductor",
+        "jwt-secret",
+        "user-uuid",
     );
 
     // Verify Conductor download
@@ -333,7 +374,15 @@ fn simulate_provision_flow(req: MockProvisionRequest) -> MockProvisionResponse {
 
     // 2. Generate post-install script
     let jwt_secret = "test-jwt-secret";
-    let script = generate_post_install_script(&req.user_id, jwt_secret, &hostname);
+    let script = generate_post_install_script(
+        "TestPassword123!",
+        "ABC123",
+        "https://api.spoq.dev",
+        &hostname,
+        "https://download.spoq.dev/conductor",
+        jwt_secret,
+        &req.user_id,
+    );
 
     // 3. Verify script was generated correctly
     assert!(script.contains(&req.user_id));
@@ -415,15 +464,23 @@ fn test_provision_generates_unique_scripts_per_user() {
     };
 
     let script1 = generate_post_install_script(
-        &user1.user_id,
-        "jwt-secret",
+        "TestPassword123!",
+        "ABC123",
+        "https://api.spoq.dev",
         &format!("{}.spoq.dev", user1.username),
+        "https://download.spoq.dev/conductor",
+        "jwt-secret",
+        &user1.user_id,
     );
 
     let script2 = generate_post_install_script(
-        &user2.user_id,
-        "jwt-secret",
+        "TestPassword123!",
+        "DEF456",
+        "https://api.spoq.dev",
         &format!("{}.spoq.dev", user2.username),
+        "https://download.spoq.dev/conductor",
+        "jwt-secret",
+        &user2.user_id,
     );
 
     // Scripts should be different
