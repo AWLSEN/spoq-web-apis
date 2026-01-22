@@ -9,9 +9,13 @@ use spoq_web_apis::services::hostinger::generate_post_install_script;
 #[test]
 fn test_post_install_script_contains_required_components() {
     let script = generate_post_install_script(
-        "550e8400-e29b-41d4-a716-446655440000", // owner_id
-        "super-secret-jwt-key-12345",            // jwt_secret
+        "TestPassword123!",                      // ssh_password
+        "ABC123",                                // registration_code
+        "https://api.spoq.dev",                  // api_url
         "testuser.spoq.dev",                     // hostname
+        "https://download.spoq.dev/conductor",   // conductor_url
+        "super-secret-jwt-key-12345",            // jwt_secret
+        "550e8400-e29b-41d4-a716-446655440000",  // owner_id
     );
 
     // Verify owner_id is injected
@@ -37,9 +41,13 @@ fn test_post_install_script_contains_required_components() {
 #[test]
 fn test_post_install_script_conductor_env_vars() {
     let script = generate_post_install_script(
-        "user-uuid-123",
-        "jwt-secret-456",
+        "TestPassword123!",
+        "ABC123",
+        "https://api.spoq.dev",
         "alice.spoq.dev",
+        "https://download.spoq.dev/conductor",
+        "jwt-secret-456",
+        "user-uuid-123",
     );
 
     // Verify Conductor systemd service uses env vars (not config file)
@@ -67,9 +75,13 @@ fn test_post_install_script_conductor_env_vars() {
 #[test]
 fn test_post_install_script_caddy_setup() {
     let script = generate_post_install_script(
-        "user-uuid",
-        "jwt-secret",
+        "TestPassword123!",
+        "ABC123",
+        "https://api.spoq.dev",
         "bob.spoq.dev",
+        "https://download.spoq.dev/conductor",
+        "jwt-secret",
+        "user-uuid",
     );
 
     // Verify Caddy installation
