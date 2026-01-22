@@ -20,7 +20,7 @@ ADD COLUMN cancellation_reason TEXT;
 -- Create subscription_events table for audit trail
 CREATE TABLE subscription_events (
     id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     event_type TEXT NOT NULL,
     subscription_id TEXT,
     stripe_event_id TEXT UNIQUE,
