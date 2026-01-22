@@ -26,5 +26,5 @@ pub use device::{DecodeError, DeviceGrantCreated, VerificationData};
 pub use github::{GitHubOAuthConfig, GitHubUser, GithubError};
 pub use hostinger::{HostingerClient, HostingerError};
 pub use ssh_installer::{SshConfig, SshInstallerError, SshInstallerService, ScriptExecutionResult};
-pub use stripe_client::{StripeClientService, StripeClientError};
+pub use stripe_client::StripeClientService;
 pub use token::Claims;

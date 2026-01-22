@@ -12,7 +12,6 @@ use uuid::Uuid;
 /// Helper to create test app with payment routes
 fn create_test_app(
     pool: PgPool,
-    config: Config,
     stripe_client: StripeClientService,
 ) -> actix_web::App<
     impl actix_web::dev::ServiceFactory<
@@ -25,7 +24,6 @@ fn create_test_app(
 > {
     App::new()
         .app_data(web::Data::new(pool))
-        .app_data(web::Data::new(config))
         .app_data(web::Data::new(stripe_client))
         .route(
             "/api/payment/create-checkout-session",
@@ -54,7 +52,7 @@ async fn test_create_checkout_session_missing_user() {
     };
 
     let stripe_client = StripeClientService::new(stripe_key);
-    let app = test::init_service(create_test_app(pool.clone(), config.clone(), stripe_client)).await;
+    let app = test::init_service(create_test_app(pool.clone(), stripe_client)).await;
 
     // Create request without auth (should fail with middleware)
     let req = test::TestRequest::post()
@@ -110,7 +108,6 @@ async fn test_create_checkout_session_invalid_plan_id() {
         AuthenticatedUser { user_id },
         web::Data::new(pool.clone()),
         web::Data::new(stripe_client),
-        web::Data::new(config.clone()),
         web::Json(CreateCheckoutRequest {
             plan_id: "invalid_plan".to_string(), // Not starting with "price_"
         }),
@@ -167,7 +164,6 @@ async fn test_create_checkout_session_duplicate_subscription() {
         AuthenticatedUser { user_id },
         web::Data::new(pool.clone()),
         web::Data::new(stripe_client),
-        web::Data::new(config.clone()),
         web::Json(CreateCheckoutRequest {
             plan_id: "price_test123".to_string(),
         }),

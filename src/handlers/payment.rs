@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use stripe::{CheckoutSessionId, Customer, CreateCustomer, CustomerId};
 
-use crate::config::Config;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthenticatedUser;
 use crate::services::StripeClientService;
@@ -50,7 +49,6 @@ pub async fn create_checkout_session(
     user: AuthenticatedUser,
     pool: web::Data<PgPool>,
     stripe_client: web::Data<StripeClientService>,
-    _config: web::Data<Config>,
     req: web::Json<CreateCheckoutRequest>,
 ) -> AppResult<HttpResponse> {
     // Query database for user email (not in JWT)

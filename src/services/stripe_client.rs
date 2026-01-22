@@ -3,16 +3,6 @@
 //! This module provides a lightweight wrapper around the Stripe Rust SDK client.
 
 use stripe::Client;
-use thiserror::Error;
-
-#[derive(Debug, Error)]
-pub enum StripeClientError {
-    #[error("Stripe API error: {0}")]
-    ApiError(#[from] stripe::StripeError),
-
-    #[error("Invalid configuration: {0}")]
-    ConfigError(String),
-}
 
 /// Stripe client service for managing payment operations
 #[derive(Clone)]
