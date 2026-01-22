@@ -717,12 +717,16 @@ echo "=== Provisioning Complete ==="
 echo "Conductor: $(systemctl is-active conductor)"
 echo "Caddy: $(systemctl is-active caddy)"
 
-# If Conductor isn't active, show the error
+# If Conductor isn't active, show the error and exit with failure
 if [ "$(systemctl is-active conductor)" != "active" ]; then
     echo ""
     echo "=== Conductor Error Log ==="
     journalctl -u conductor -n 20 --no-pager || echo "Could not retrieve logs"
+    exit 1
 fi
+
+# Explicitly exit with success code
+exit 0
 "#,
         ssh_password = ssh_password,
         registration_code = registration_code,

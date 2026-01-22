@@ -419,9 +419,14 @@ pub async fn provision_byovps(
         .execute(pool.get_ref())
         .await?;
     } else {
-        sqlx::query("UPDATE user_vps SET status = $1, updated_at = $2 WHERE id = $3")
-            .bind(final_status)
-            .bind(now)
+        // If provisioning failed, DELETE the record instead of saving "failed" status
+        // This allows users to retry without being blocked by a stale failed record
+        tracing::info!(
+            "Deleting failed BYOVPS record {} for user {} (will allow retry)",
+            vps_id,
+            user.user_id
+        );
+        sqlx::query("DELETE FROM user_vps WHERE id = $1")
             .bind(vps_id)
             .execute(pool.get_ref())
             .await?;
