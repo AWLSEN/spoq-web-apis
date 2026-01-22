@@ -13,6 +13,7 @@ pub mod auth;
 pub mod byovps;
 pub mod health;
 pub mod internal;
+pub mod payment;
 pub mod vps;
 
 // Re-export commonly used types
@@ -30,3 +31,7 @@ pub use vps::{
 };
 pub use byovps::{provision_byovps, ProvisionByovpsRequest, ProvisionByovpsResponse};
 pub use admin::{cleanup_all_vps, cleanup_user_vps, list_all_vps};
+pub use payment::{
+    create_checkout_session, get_session_status, CheckoutSessionResponse, CreateCheckoutRequest,
+    PaymentStatusResponse,
+};

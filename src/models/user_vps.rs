@@ -206,6 +206,9 @@ pub struct VpsPlan {
     pub bandwidth_tb: i32,
     pub monthly_price_cents: i64,
     pub first_month_price_cents: i64,
+    /// Stripe price ID for subscription checkout
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stripe_price_id: Option<String>,
 }
 
 /// Data center info

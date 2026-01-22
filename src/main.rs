@@ -18,6 +18,8 @@ use spoq_web_apis::handlers::{
     start_vps, stop_vps,
     // BYOVPS handlers
     provision_byovps,
+    // Payment handlers
+    create_checkout_session, get_session_status,
     // Admin handlers (TEMPORARY - NO AUTH)
     cleanup_all_vps, cleanup_user_vps, list_all_vps,
 };
@@ -149,6 +151,13 @@ async fn main() -> std::io::Result<()> {
         // Add Stripe client if configured
         if let Some(ref stripe) = stripe_client {
             app = app.app_data(stripe.clone());
+
+            // Add payment routes if Stripe is configured
+            app = app.service(
+                web::scope("/api/payment")
+                    .route("/create-checkout-session", web::post().to(create_checkout_session))
+                    .route("/session-status/{session_id}", web::get().to(get_session_status)),
+            );
         }
 
         // Add BYOVPS routes (always available - doesn't require Hostinger)

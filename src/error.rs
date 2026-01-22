@@ -40,6 +40,10 @@ pub enum AppError {
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
 
+    /// Forbidden access errors
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
+
     /// Bad request errors
     #[error("Bad request: {0}")]
     BadRequest(String),
@@ -62,6 +66,7 @@ impl ResponseError for AppError {
             AppError::Hostinger(_) => StatusCode::BAD_GATEWAY,
             AppError::Token(_) => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+            AppError::Forbidden(_) => StatusCode::FORBIDDEN,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
             AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -80,6 +85,7 @@ impl ResponseError for AppError {
             AppError::GitHub(e) => format!("GitHub authentication error: {}", e),
             AppError::Hostinger(e) => format!("VPS provisioning error: {}", e),
             AppError::Unauthorized(msg) => msg.clone(),
+            AppError::Forbidden(msg) => msg.clone(),
             AppError::BadRequest(msg) => msg.clone(),
             AppError::NotFound(msg) => msg.clone(),
         };

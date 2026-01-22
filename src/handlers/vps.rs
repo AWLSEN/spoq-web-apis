@@ -85,6 +85,7 @@ pub async fn list_plans(hostinger: web::Data<HostingerClient>) -> AppResult<Http
                 bandwidth_tb: metadata.bandwidth?.parse::<i32>().unwrap_or(0) / 1024000,
                 monthly_price_cents: monthly_price.price,
                 first_month_price_cents: monthly_price.first_period_price,
+                stripe_price_id: None, // TODO: Map Hostinger plans to Stripe price IDs
             })
         })
         .collect();
@@ -131,6 +132,25 @@ pub async fn provision_vps(
     if req.ssh_password.len() < 12 {
         return Err(AppError::BadRequest(
             "SSH password must be at least 12 characters".to_string(),
+        ));
+    }
+
+    // Check subscription status for managed VPS provisioning
+    let user_subscription: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT subscription_id, subscription_status FROM users WHERE id = $1"
+    )
+    .bind(user.user_id)
+    .fetch_optional(pool.get_ref())
+    .await?;
+
+    let (user_subscription_id, user_subscription_status) = user_subscription
+        .ok_or_else(|| AppError::Internal("User not found".to_string()))?;
+
+    // Verify active subscription for managed VPS
+    let subscription_status = user_subscription_status.as_deref().unwrap_or("inactive");
+    if subscription_status != "active" {
+        return Err(AppError::Forbidden(
+            "Active subscription required for managed VPS provisioning. Please complete your subscription payment.".to_string()
         ));
     }
 
@@ -200,8 +220,9 @@ pub async fn provision_vps(
         r#"
         INSERT INTO user_vps (
             id, user_id, provider, plan_id, template_id, data_center_id,
-            hostname, status, ssh_username, ssh_password_hash, jwt_secret
-        ) VALUES ($1, $2, 'hostinger', $3, $4, $5, $6, 'pending', 'spoq', $7, $8)
+            hostname, status, ssh_username, ssh_password_hash, jwt_secret,
+            requires_subscription, subscription_id
+        ) VALUES ($1, $2, 'hostinger', $3, $4, $5, $6, 'pending', 'spoq', $7, $8, $9, $10)
         "#,
     )
     .bind(vps_id)
@@ -212,6 +233,8 @@ pub async fn provision_vps(
     .bind(&hostname)
     .bind(&ssh_password_hash)
     .bind(&jwt_secret)
+    .bind(true) // requires_subscription = true for managed VPS
+    .bind(&user_subscription_id) // subscription_id from user record
     .execute(pool.get_ref())
     .await?;
 

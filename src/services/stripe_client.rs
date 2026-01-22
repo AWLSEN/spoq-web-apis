@@ -34,6 +34,11 @@ impl StripeClientService {
         Self { client }
     }
 
+    /// Get a reference to the underlying Stripe client
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
+
     /// Create a checkout session for subscription purchase
     ///
     /// # Arguments
