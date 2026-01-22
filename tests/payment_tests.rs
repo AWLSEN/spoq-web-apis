@@ -188,9 +188,6 @@ async fn test_create_checkout_session_duplicate_subscription() {
 async fn test_get_session_status_invalid_format() {
     // Setup
     let config = Config::from_env().expect("Failed to load config");
-    let pool = create_pool(&config.database_url)
-        .await
-        .expect("Failed to create pool");
 
     let stripe_key = match &config.stripe_secret_key {
         Some(key) => key.clone(),

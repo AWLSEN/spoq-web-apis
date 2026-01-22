@@ -15,7 +15,7 @@ use crate::middleware::auth::AuthenticatedUser;
 use crate::services::StripeClientService;
 
 /// Request to create a checkout session
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CreateCheckoutRequest {
     /// VPS plan ID (Stripe price ID)
     pub plan_id: String,
@@ -50,7 +50,7 @@ pub async fn create_checkout_session(
     user: AuthenticatedUser,
     pool: web::Data<PgPool>,
     stripe_client: web::Data<StripeClientService>,
-    config: web::Data<Config>,
+    _config: web::Data<Config>,
     req: web::Json<CreateCheckoutRequest>,
 ) -> AppResult<HttpResponse> {
     // Query database for user email (not in JWT)
@@ -125,10 +125,10 @@ pub async fn create_checkout_session(
     };
 
     // Create Stripe Checkout Session
-    let success_url = format!("{}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
-        config.client_url.as_deref().unwrap_or("http://localhost:3000"));
-    let cancel_url = format!("{}/payment/cancel",
-        config.client_url.as_deref().unwrap_or("http://localhost:3000"));
+    // TODO: Use actual client URL from config when available
+    let client_url = "http://localhost:3000"; // Placeholder for client URL
+    let success_url = format!("{}/payment/success?session_id={{CHECKOUT_SESSION_ID}}", client_url);
+    let cancel_url = format!("{}/payment/cancel", client_url);
 
     use stripe::{CreateCheckoutSession, CheckoutSessionMode, CreateCheckoutSessionLineItems};
 

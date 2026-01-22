@@ -52,6 +52,10 @@ pub enum AppError {
     #[error("Not found: {0}")]
     NotFound(String),
 
+    /// Conflict errors (e.g., duplicate resource)
+    #[error("Conflict: {0}")]
+    Conflict(String),
+
     /// Internal server errors
     #[error("Internal server error: {0}")]
     Internal(String),
@@ -69,6 +73,7 @@ impl ResponseError for AppError {
             AppError::Forbidden(_) => StatusCode::FORBIDDEN,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
+            AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -88,6 +93,7 @@ impl ResponseError for AppError {
             AppError::Forbidden(msg) => msg.clone(),
             AppError::BadRequest(msg) => msg.clone(),
             AppError::NotFound(msg) => msg.clone(),
+            AppError::Conflict(msg) => msg.clone(),
         };
 
         let body = serde_json::json!({
