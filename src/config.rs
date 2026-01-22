@@ -22,6 +22,9 @@ pub struct Config {
     // Cloudflare DNS settings
     pub cloudflare_api_token: Option<String>,
     pub cloudflare_zone_id: Option<String>,
+    // Stripe payment settings
+    pub stripe_secret_key: Option<String>,
+    pub stripe_webhook_secret: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -128,6 +131,10 @@ impl Config {
         let cloudflare_api_token = env::var("CLOUDFLARE_API_TOKEN").ok();
         let cloudflare_zone_id = env::var("CLOUDFLARE_ZONE_ID").ok();
 
+        // Stripe payment settings (optional for local development)
+        let stripe_secret_key = env::var("STRIPE_SECRET_KEY").ok();
+        let stripe_webhook_secret = env::var("STRIPE_WEBHOOK_SECRET").ok();
+
         Ok(Config {
             database_url,
             github_client_id,
@@ -145,6 +152,8 @@ impl Config {
             base_url,
             cloudflare_api_token,
             cloudflare_zone_id,
+            stripe_secret_key,
+            stripe_webhook_secret,
         })
     }
 

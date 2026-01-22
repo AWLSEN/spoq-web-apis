@@ -16,6 +16,7 @@ pub mod github;
 pub mod hostinger;
 pub mod registration;
 pub mod ssh_installer;
+pub mod stripe_client;
 pub mod token;
 pub mod user;
 
@@ -25,4 +26,5 @@ pub use device::{DecodeError, DeviceGrantCreated, VerificationData};
 pub use github::{GitHubOAuthConfig, GitHubUser, GithubError};
 pub use hostinger::{HostingerClient, HostingerError};
 pub use ssh_installer::{SshConfig, SshInstallerError, SshInstallerService, ScriptExecutionResult};
+pub use stripe_client::{StripeClientService, StripeClientError};
 pub use token::Claims;

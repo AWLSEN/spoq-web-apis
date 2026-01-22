@@ -23,7 +23,7 @@ use spoq_web_apis::handlers::{
 };
 use spoq_web_apis::handlers::internal::register_conductor;
 use spoq_web_apis::middleware::{create_rate_limiter, create_internal_rate_limiter};
-use spoq_web_apis::services::{CloudflareService, HostingerClient};
+use spoq_web_apis::services::{CloudflareService, HostingerClient, StripeClientService};
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -90,6 +90,12 @@ async fn main() -> std::io::Result<()> {
         }
     };
 
+    // Create Stripe client if secret key is configured
+    let stripe_client = config.stripe_secret_key.as_ref().map(|key| {
+        tracing::info!("Stripe payment client configured");
+        web::Data::new(StripeClientService::new(key.clone()))
+    });
+
     // Wrap pool and config for VPS handlers
     let db_pool = web::Data::new(pool);
     let app_config = web::Data::new(config);
@@ -138,6 +144,11 @@ async fn main() -> std::io::Result<()> {
         // Add Cloudflare client if configured
         if let Some(ref cloudflare) = cloudflare_client {
             app = app.app_data(cloudflare.clone());
+        }
+
+        // Add Stripe client if configured
+        if let Some(ref stripe) = stripe_client {
+            app = app.app_data(stripe.clone());
         }
 
         // Add BYOVPS routes (always available - doesn't require Hostinger)

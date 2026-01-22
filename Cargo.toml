@@ -56,3 +56,6 @@ tracing-actix-web = "0.7"
 
 # SSH client for remote VPS operations
 ssh2 = "0.9"
+
+# Stripe payment integration
+async-stripe = { version = "0.41", default-features = false, features = ["runtime-tokio-hyper-rustls", "checkout", "billing"] }
