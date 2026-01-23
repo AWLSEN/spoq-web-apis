@@ -222,7 +222,7 @@ pub async fn provision_vps(
             id, user_id, provider, plan_id, template_id, data_center_id,
             hostname, status, ssh_username, ssh_password_hash, jwt_secret,
             requires_subscription, subscription_id
-        ) VALUES ($1, $2, 'hostinger', $3, $4, $5, $6, 'pending', 'spoq', $7, $8, $9, $10)
+        ) VALUES ($1, $2, 'hostinger', $3, $4, $5, $6, 'pending', 'root', $7, $8, $9, $10)
         "#,
     )
     .bind(vps_id)

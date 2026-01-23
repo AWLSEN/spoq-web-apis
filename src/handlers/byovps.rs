@@ -316,6 +316,13 @@ pub async fn provision_byovps(
         ));
     }
 
+    // BYOVPS requires root access for proper system configuration
+    if req.ssh_username != "root" {
+        return Err(AppError::BadRequest(
+            "BYOVPS requires SSH access as 'root' user for proper system configuration.".to_string(),
+        ));
+    }
+
     // Check if user already has an active VPS (including BYOVPS)
     let existing: Option<UserVps> = sqlx::query_as(
         "SELECT * FROM user_vps WHERE user_id = $1 AND status NOT IN ('terminated', 'failed')",

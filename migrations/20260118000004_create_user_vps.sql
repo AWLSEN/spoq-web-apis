@@ -30,7 +30,7 @@ CREATE TABLE user_vps (
         -- terminated: VPS deleted
 
     -- SSH credentials (for mobile access)
-    ssh_username TEXT NOT NULL DEFAULT 'spoq',
+    ssh_username TEXT NOT NULL DEFAULT 'root',
     ssh_password_hash TEXT NOT NULL,  -- Argon2 hash of user-created password
 
     -- JWT validation config (set during provisioning)
