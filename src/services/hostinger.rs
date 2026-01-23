@@ -570,8 +570,26 @@ apt-get update && apt-get install -y gh
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 apt-get install -y nodejs
 
-# 2d. Install Codex CLI
+# 2c. Install Codex CLI via npm (stable)
+echo "Installing Codex CLI via npm..."
 npm install -g @openai/codex
+codex --version || echo "WARNING: Codex CLI installation may have failed"
+
+# 2d. Install Claude Code CLI via curl (stable channel)
+echo "Installing Claude Code CLI (stable)..."
+curl -fsSL https://claude.ai/install.sh | bash -s stable
+
+# Add ~/.local/bin to PATH and create symlink
+export PATH="/root/.local/bin:$PATH"
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> /root/.bashrc
+
+# Create symlink for system-wide access
+if [ -f "/root/.local/bin/claude" ]; then
+    ln -sf /root/.local/bin/claude /usr/local/bin/claude
+    echo "Claude CLI installed: $(claude --version)"
+else
+    echo "WARNING: Claude CLI installation may have failed"
+fi
 
 # 3. Set system hostname
 hostnamectl set-hostname "$HOSTNAME"
@@ -580,23 +598,6 @@ echo "127.0.1.1 $HOSTNAME" >> /etc/hosts
 
 # 4. Set root password for SSH access
 echo "root:$SSH_PASSWORD" | chpasswd
-
-# 5. Install Claude Code CLI as root
-echo "Installing Claude Code CLI for root user..."
-curl -fsSL https://claude.ai/install.sh | bash
-
-# Create symlink to make Claude available system-wide
-if [ -f "/root/.local/bin/claude" ]; then
-    ln -sf /root/.local/bin/claude /usr/local/bin/claude
-    echo "Created symlink: /usr/local/bin/claude -> /root/.local/bin/claude"
-elif [ -f "/usr/local/bin/claude" ]; then
-    echo "Claude CLI already at /usr/local/bin/claude"
-elif command -v claude >/dev/null 2>&1; then
-    echo "Claude CLI found at $(command -v claude)"
-else
-    echo "WARNING: Claude CLI installation may have failed"
-    echo "Conductor will fall back to OpenRouter if Claude is not available"
-fi
 
 # 6. Download and install Conductor (auto-detects platform: x86_64 or aarch64)
 echo "Preparing for Conductor installation..."
