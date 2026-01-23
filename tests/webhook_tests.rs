@@ -8,6 +8,7 @@ use spoq_web_apis::handlers::webhooks::stripe_webhook;
 use spoq_web_apis::services::HostingerClient;
 use sqlx::PgPool;
 use uuid::Uuid;
+use rand;
 
 /// Helper to create test app with webhook routes
 fn create_test_app(
@@ -108,18 +109,11 @@ async fn test_log_subscription_event() {
     .bind(user_id)
     .bind("testuser")
     .bind(&email)
-    .bind(12345i64)
+    .bind(rand::random::<i64>().abs())
     .bind("https://example.com/avatar.jpg")
     .execute(&pool)
     .await
     .expect("Failed to create test user");
-
-    // Get user's integer ID
-    let user_int_id: i32 = sqlx::query_scalar("SELECT id FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_one(&pool)
-        .await
-        .expect("Failed to get user ID");
 
     // Test logging event directly (unit test)
     let event_data = json!({
@@ -130,7 +124,7 @@ async fn test_log_subscription_event() {
         "INSERT INTO subscription_events (user_id, event_type, subscription_id, stripe_event_id, data)
          VALUES ($1, $2, $3, $4, $5)"
     )
-    .bind(user_int_id)
+    .bind(user_id)
     .bind("test_event")
     .bind("sub_test123")
     .bind(format!("evt_test_{}", Uuid::new_v4()))
@@ -144,7 +138,7 @@ async fn test_log_subscription_event() {
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM subscription_events WHERE user_id = $1 AND event_type = 'test_event'"
     )
-    .bind(user_int_id)
+    .bind(user_id)
     .fetch_one(&pool)
     .await
     .expect("Failed to count events");
@@ -153,7 +147,7 @@ async fn test_log_subscription_event() {
 
     // Cleanup
     sqlx::query("DELETE FROM subscription_events WHERE user_id = $1")
-        .bind(user_int_id)
+        .bind(user_id)
         .execute(&pool)
         .await
         .ok();
@@ -186,7 +180,7 @@ async fn test_subscription_status_update() {
     .bind(user_id)
     .bind("testuser")
     .bind(&email)
-    .bind(12345i64)
+    .bind(rand::random::<i64>().abs())
     .bind("https://example.com/avatar.jpg")
     .bind(&stripe_customer_id)
     .bind(&subscription_id)
@@ -241,7 +235,7 @@ async fn test_vps_cancellation_on_subscription_deleted() {
     .bind(user_id)
     .bind("testuser")
     .bind(&email)
-    .bind(12345i64)
+    .bind(rand::random::<i64>().abs())
     .bind("https://example.com/avatar.jpg")
     .bind(&stripe_customer_id)
     .bind(&subscription_id)
@@ -250,23 +244,19 @@ async fn test_vps_cancellation_on_subscription_deleted() {
     .await
     .expect("Failed to create test user");
 
-    // Get user's integer ID
-    let user_int_id: i32 = sqlx::query_scalar("SELECT id FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_one(&pool)
-        .await
-        .expect("Failed to get user ID");
-
     // Create a VPS record
     sqlx::query(
-        "INSERT INTO user_vps (user_id, hostinger_vps_id, hostname, status, requires_subscription)
-         VALUES ($1, $2, $3, $4, $5)"
+        "INSERT INTO user_vps (user_id, provider_instance_id, hostname, status, requires_subscription, jwt_secret, ssh_password_hash, plan_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
     )
-    .bind(user_int_id)
-    .bind(12345i64)
+    .bind(user_id)
+    .bind(rand::random::<i64>().abs())
     .bind("test.spoq.dev")
     .bind("active")
     .bind(true)
+    .bind("test_jwt_secret")
+    .bind("test_password_hash")
+    .bind("test_plan")
     .execute(&pool)
     .await
     .expect("Failed to create VPS record");
@@ -286,7 +276,7 @@ async fn test_vps_cancellation_on_subscription_deleted() {
              cancellation_reason = 'subscription_cancelled'
          WHERE user_id = $1"
     )
-    .bind(user_int_id)
+    .bind(user_id)
     .execute(&pool)
     .await
     .expect("Failed to update VPS status");
@@ -295,7 +285,7 @@ async fn test_vps_cancellation_on_subscription_deleted() {
     let vps_status: String = sqlx::query_scalar(
         "SELECT status FROM user_vps WHERE user_id = $1"
     )
-    .bind(user_int_id)
+    .bind(user_id)
     .fetch_one(&pool)
     .await
     .expect("Failed to get VPS status");
@@ -306,7 +296,7 @@ async fn test_vps_cancellation_on_subscription_deleted() {
     let cancellation_reason: String = sqlx::query_scalar(
         "SELECT cancellation_reason FROM user_vps WHERE user_id = $1"
     )
-    .bind(user_int_id)
+    .bind(user_id)
     .fetch_one(&pool)
     .await
     .expect("Failed to get cancellation reason");
@@ -315,7 +305,7 @@ async fn test_vps_cancellation_on_subscription_deleted() {
 
     // Cleanup
     sqlx::query("DELETE FROM user_vps WHERE user_id = $1")
-        .bind(user_int_id)
+        .bind(user_id)
         .execute(&pool)
         .await
         .ok();
@@ -347,7 +337,7 @@ async fn test_payment_failed_updates_status() {
     .bind(user_id)
     .bind("testuser")
     .bind(&email)
-    .bind(12345i64)
+    .bind(rand::random::<i64>().abs())
     .bind("https://example.com/avatar.jpg")
     .bind(&stripe_customer_id)
     .bind("active")
@@ -397,18 +387,11 @@ async fn test_duplicate_event_handling() {
     .bind(user_id)
     .bind("testuser")
     .bind(&email)
-    .bind(12345i64)
+    .bind(rand::random::<i64>().abs())
     .bind("https://example.com/avatar.jpg")
     .execute(&pool)
     .await
     .expect("Failed to create test user");
-
-    // Get user's integer ID
-    let user_int_id: i32 = sqlx::query_scalar("SELECT id FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_one(&pool)
-        .await
-        .expect("Failed to get user ID");
 
     let stripe_event_id = format!("evt_test_{}", Uuid::new_v4());
     let event_data = json!({"test": "data"});
@@ -419,7 +402,7 @@ async fn test_duplicate_event_handling() {
          VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (stripe_event_id) DO NOTHING"
     )
-    .bind(user_int_id)
+    .bind(user_id)
     .bind("test_event")
     .bind("sub_test123")
     .bind(&stripe_event_id)
@@ -432,7 +415,7 @@ async fn test_duplicate_event_handling() {
          VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (stripe_event_id) DO NOTHING"
     )
-    .bind(user_int_id)
+    .bind(user_id)
     .bind("test_event")
     .bind("sub_test123")
     .bind(&stripe_event_id)
