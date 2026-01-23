@@ -24,7 +24,9 @@ use uuid::Uuid;
 use crate::config::Config;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthenticatedUser;
-use crate::models::{ProvisionVpsRequest, UserVps, VpsDataCenter, VpsPlan, VpsStatusResponse};
+use crate::models::{
+    ProvisionVpsRequest, UserVps, VpsDataCenter, VpsPlan, VpsPrecheckResponse, VpsStatusResponse,
+};
 use crate::services::cloudflare::CloudflareService;
 use crate::services::hostinger::{generate_post_install_script, CreateVpsRequest, HostingerClient, VpsSetup};
 use crate::services::registration;
@@ -551,6 +553,76 @@ pub async fn get_vps_status(
             "error": "No VPS found for user",
             "message": "Use POST /api/vps/provision to create a VPS"
         }))),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VPS pre-check (authenticated) - for CLI setup flow Step 1
+// ---------------------------------------------------------------------------
+
+/// Pre-check VPS status for the CLI setup flow
+///
+/// This is a lightweight endpoint specifically for Step 1 (PRE-CHECK) of the
+/// CLI setup flow. It returns a simplified response indicating:
+/// - Whether the user has a VPS
+/// - The VPS connection URL (if ready)
+/// - Whether the conductor is healthy
+/// - A simplified status enum
+///
+/// GET /api/vps/precheck
+pub async fn get_vps_precheck(
+    user: AuthenticatedUser,
+    pool: web::Data<PgPool>,
+) -> AppResult<HttpResponse> {
+    // Query for user's VPS, excluding terminated ones
+    let vps: Option<UserVps> = sqlx::query_as(
+        "SELECT * FROM user_vps WHERE user_id = $1 AND status NOT IN ('terminated') ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(user.user_id)
+    .fetch_optional(pool.get_ref())
+    .await?;
+
+    match vps {
+        Some(vps) => {
+            // Determine health status based on conductor_verified_at
+            let healthy = if vps.status == "failed" {
+                Some(false)
+            } else if vps.conductor_verified_at.is_some() {
+                Some(true)
+            } else if vps.registered_at.is_some() {
+                // Registered but not verified - do a quick health check
+                let http_client = Client::builder()
+                    .timeout(Duration::from_secs(3))
+                    .build()
+                    .map_err(|e| {
+                        AppError::Internal(format!("Failed to create HTTP client: {}", e))
+                    })?;
+
+                let health_url = format!("https://{}/health", vps.hostname);
+                match http_client.get(&health_url).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        // Update conductor_verified_at in the background
+                        sqlx::query(
+                            "UPDATE user_vps SET conductor_verified_at = NOW(), status = 'ready', ready_at = COALESCE(ready_at, NOW()) WHERE id = $1"
+                        )
+                        .bind(vps.id)
+                        .execute(pool.get_ref())
+                        .await?;
+                        Some(true)
+                    }
+                    _ => Some(false),
+                }
+            } else {
+                // Not yet registered, health unknown
+                None
+            };
+
+            Ok(HttpResponse::Ok().json(VpsPrecheckResponse::from_vps(&vps, healthy)))
+        }
+        None => {
+            // No VPS found for user
+            Ok(HttpResponse::Ok().json(VpsPrecheckResponse::no_vps()))
+        }
     }
 }
 

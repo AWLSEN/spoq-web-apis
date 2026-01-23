@@ -220,3 +220,85 @@ pub struct VpsDataCenter {
     pub country: String,
     pub continent: String,
 }
+
+/// Pre-check status response for CLI setup flow (Step 1: PRE-CHECK)
+///
+/// This is a simplified response specifically for the CLI to determine
+/// if the user has a VPS and whether to skip to CREDS-SYNC or start provisioning.
+#[derive(Debug, Serialize)]
+pub struct VpsPrecheckResponse {
+    /// Whether the user has a VPS provisioned
+    pub has_vps: bool,
+    /// VPS ID if exists
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vps_id: Option<Uuid>,
+    /// VPS URL (hostname) if exists and ready for connections
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vps_url: Option<String>,
+    /// Whether the conductor health check passes (null if no VPS or not applicable)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub healthy: Option<bool>,
+    /// Simplified status: "provisioning" | "ready" | "stopped" | "error" | null
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<VpsPrecheckStatus>,
+}
+
+/// Simplified VPS status for pre-check
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum VpsPrecheckStatus {
+    /// VPS is being provisioned, installed, registered, or configured
+    Provisioning,
+    /// VPS is fully ready and healthy
+    Ready,
+    /// VPS is stopped
+    Stopped,
+    /// VPS provisioning failed or is in an error state
+    Error,
+}
+
+impl VpsPrecheckStatus {
+    /// Convert from database status string to pre-check status
+    pub fn from_db_status(status: &str) -> Self {
+        match status {
+            "ready" => VpsPrecheckStatus::Ready,
+            "stopped" => VpsPrecheckStatus::Stopped,
+            "failed" | "terminated" => VpsPrecheckStatus::Error,
+            // pending, provisioning, registering, configuring all map to provisioning
+            _ => VpsPrecheckStatus::Provisioning,
+        }
+    }
+}
+
+impl VpsPrecheckResponse {
+    /// Create a response indicating no VPS exists
+    pub fn no_vps() -> Self {
+        Self {
+            has_vps: false,
+            vps_id: None,
+            vps_url: None,
+            healthy: None,
+            status: None,
+        }
+    }
+
+    /// Create a response from a UserVps record
+    pub fn from_vps(vps: &UserVps, healthy: Option<bool>) -> Self {
+        let status = VpsPrecheckStatus::from_db_status(&vps.status);
+
+        // Only provide vps_url if the VPS is ready or at least registered
+        let vps_url = if vps.status == "ready" || vps.registered_at.is_some() {
+            Some(format!("https://{}", vps.hostname))
+        } else {
+            None
+        };
+
+        Self {
+            has_vps: true,
+            vps_id: Some(vps.id),
+            vps_url,
+            healthy,
+            status: Some(status),
+        }
+    }
+}

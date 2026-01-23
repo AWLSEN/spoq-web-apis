@@ -22,13 +22,13 @@ pub mod webhooks;
 pub use auth::{
     device_authorize, device_init, device_token, device_verify, github_callback, github_redirect,
     refresh_token, revoke_token, AppState, AuthorizeForm, CallbackQuery, DeviceInitRequest,
-    DeviceInitResponse, DeviceTokenRequest, DeviceTokenResponse, GitHubRedirectQuery,
-    RefreshRequest, RefreshResponse, RevokeRequest, VerifyQuery,
+    DeviceInitResponse, DeviceTokenRequest, GitHubRedirectQuery, RefreshRequest, RefreshResponse,
+    RevokeRequest, TokenResponse, VerifyQuery,
 };
 pub use health::{health_check, HealthResponse};
 pub use vps::{
-    get_vps_status, list_datacenters, list_plans, provision_vps, reset_password, restart_vps,
-    start_vps, stop_vps, DataCentersResponse, ProvisionResponse, ResetPasswordRequest,
+    get_vps_precheck, get_vps_status, list_datacenters, list_plans, provision_vps, reset_password,
+    restart_vps, start_vps, stop_vps, DataCentersResponse, ProvisionResponse, ResetPasswordRequest,
     SuccessResponse, VpsPlansResponse,
 };
 pub use byovps::{provision_byovps, ProvisionByovpsRequest, ProvisionByovpsResponse};

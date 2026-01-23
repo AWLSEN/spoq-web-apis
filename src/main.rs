@@ -14,8 +14,8 @@ use spoq_web_apis::handlers::{
     device_authorize, device_init, device_token, device_verify, github_callback, github_redirect,
     health_check, refresh_token, revoke_token,
     // VPS handlers
-    get_vps_status, list_datacenters, list_plans, provision_vps, reset_password, restart_vps,
-    start_vps, stop_vps,
+    get_vps_precheck, get_vps_status, list_datacenters, list_plans, provision_vps, reset_password,
+    restart_vps, start_vps, stop_vps,
     // BYOVPS handlers
     provision_byovps,
     // Payment handlers
@@ -182,6 +182,10 @@ async fn main() -> std::io::Result<()> {
                 .route("/cleanup-vps/{email}", web::delete().to(cleanup_user_vps))
                 .route("/list-vps", web::get().to(list_all_vps)),
         );
+
+        // VPS precheck endpoint (available without Hostinger - just DB query)
+        // This endpoint is used by the CLI for Step 1: PRE-CHECK
+        app = app.route("/api/vps/precheck", web::get().to(get_vps_precheck));
 
         // Add VPS routes if Hostinger is configured
         if let Some(ref hostinger) = hostinger_client {

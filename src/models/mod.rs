@@ -15,6 +15,6 @@ pub use device_grant::{DeviceGrant, DeviceGrantStatus};
 pub use token::RefreshToken;
 pub use user::User;
 pub use user_vps::{
-    ProvisionVpsRequest, UserVps, VpsDataCenter, VpsPlan, VpsProvider, VpsStatus,
-    VpsStatusResponse,
+    ProvisionVpsRequest, UserVps, VpsDataCenter, VpsPlan, VpsPrecheckResponse,
+    VpsPrecheckStatus, VpsProvider, VpsStatus, VpsStatusResponse,
 };
