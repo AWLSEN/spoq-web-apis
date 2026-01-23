@@ -560,6 +560,22 @@ apt-get update && apt-get upgrade -y
 # 2. Install dependencies
 apt-get install -y curl jq ca-certificates
 
+# 2a. Install GitHub CLI
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+apt-get update && apt-get install -y gh
+
+# 2b. Install Claude Code CLI
+curl -fsSL https://claude.ai/install.sh | bash
+
+# 2c. Install Node.js (required for Codex CLI)
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt-get install -y nodejs
+
+# 2d. Install Codex CLI
+npm install -g @openai/codex
+
 # 3. Set system hostname
 hostnamectl set-hostname "$HOSTNAME"
 # Update /etc/hosts to resolve new hostname
