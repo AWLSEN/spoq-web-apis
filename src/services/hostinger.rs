@@ -566,10 +566,7 @@ chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
 apt-get update && apt-get install -y gh
 
-# 2b. Install Claude Code CLI
-curl -fsSL https://claude.ai/install.sh | bash
-
-# 2c. Install Node.js (required for Codex CLI)
+# 2b. Install Node.js (required for Codex CLI)
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 apt-get install -y nodejs
 
@@ -581,16 +578,27 @@ hostnamectl set-hostname "$HOSTNAME"
 # Update /etc/hosts to resolve new hostname
 echo "127.0.1.1 $HOSTNAME" >> /etc/hosts
 
-# 4. Create spoq user (idempotent - only if doesn't exist)
-if ! id spoq >/dev/null 2>&1; then
-    useradd -m -s /bin/bash spoq
-fi
-echo "spoq:$SSH_PASSWORD" | chpasswd
-usermod -aG sudo spoq
-echo "spoq ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/spoq
-chmod 440 /etc/sudoers.d/spoq
+# 4. Set root password for SSH access
+echo "root:$SSH_PASSWORD" | chpasswd
 
-# 5. Download and install Conductor (auto-detects platform: x86_64 or aarch64)
+# 5. Install Claude Code CLI as root
+echo "Installing Claude Code CLI for root user..."
+curl -fsSL https://claude.ai/install.sh | bash
+
+# Create symlink to make Claude available system-wide
+if [ -f "/root/.local/bin/claude" ]; then
+    ln -sf /root/.local/bin/claude /usr/local/bin/claude
+    echo "Created symlink: /usr/local/bin/claude -> /root/.local/bin/claude"
+elif [ -f "/usr/local/bin/claude" ]; then
+    echo "Claude CLI already at /usr/local/bin/claude"
+elif command -v claude >/dev/null 2>&1; then
+    echo "Claude CLI found at $(command -v claude)"
+else
+    echo "WARNING: Claude CLI installation may have failed"
+    echo "Conductor will fall back to OpenRouter if Claude is not available"
+fi
+
+# 6. Download and install Conductor (auto-detects platform: x86_64 or aarch64)
 echo "Preparing for Conductor installation..."
 
 # Stop any running conductor service from previous attempts
@@ -622,17 +630,17 @@ if ! curl -fsSL "$CONDUCTOR_URL" | bash; then
     exit 1
 fi
 
-# Change ownership to spoq user after successful installation
-echo "Setting spoq ownership..."
-chown -R spoq:spoq /opt/spoq
+# Set ownership to root after successful installation
+echo "Setting root ownership..."
+chown -R root:root /opt/spoq
 
-# 6. Write registration code (Conductor will self-register on first boot)
+# 7. Write registration code (Conductor will self-register on first boot)
 mkdir -p /etc/spoq
 echo "$REGISTRATION_CODE" > /etc/spoq/registration
 chmod 600 /etc/spoq/registration
-chown -R spoq:spoq /etc/spoq
+chown -R root:root /etc/spoq
 
-# 7. Create minimal Conductor config (Conductor populates [auth] after registration)
+# 8. Create minimal Conductor config (Conductor populates [auth] after registration)
 mkdir -p /etc/conductor
 cat > /etc/conductor/config.toml << EOF
 [server]
@@ -644,9 +652,9 @@ api_url = "$API_URL"
 # Conductor reads /etc/spoq/registration on first boot
 # and calls $API_URL/internal/conductor/register
 EOF
-chown -R spoq:spoq /etc/conductor
+chown -R root:root /etc/conductor
 
-# 8. Create VPS marker file
+# 9. Create VPS marker file
 cat > /etc/spoq/vps.marker << EOF
 {{
   "vps": true,
@@ -655,7 +663,7 @@ cat > /etc/spoq/vps.marker << EOF
 }}
 EOF
 
-# 9. Create Conductor systemd service
+# 10. Create Conductor systemd service
 cat > /etc/systemd/system/conductor.service << SERVICEEOF
 [Unit]
 Description=Spoq Conductor - AI Backend Service
@@ -663,8 +671,8 @@ After=network.target
 
 [Service]
 Type=simple
-User=spoq
-Group=spoq
+User=root
+Group=root
 WorkingDirectory=/opt/spoq
 ExecStart=/opt/spoq/bin/conductor
 Restart=always
@@ -672,6 +680,7 @@ RestartSec=5
 Environment="RUST_LOG=info"
 Environment="CONDUCTOR_AUTH__JWT_SECRET=$JWT_SECRET"
 Environment="CONDUCTOR_AUTH__OWNER_ID=$OWNER_ID"
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
 
 [Install]
 WantedBy=multi-user.target
@@ -681,12 +690,12 @@ systemctl daemon-reload
 systemctl enable conductor
 systemctl start conductor
 
-# 10. Download and install Spoq CLI
+# 11. Download and install Spoq CLI
 curl -fsSL https://download.spoq.dev/cli | bash
 
-# 11. Setup welcome message
-cat > /home/spoq/.bashrc << 'BASHRC'
-export PATH="/usr/local/bin:$PATH"
+# 12. Setup welcome message
+cat > /root/.bashrc << 'BASHRC'
+export PATH="/root/.local/bin:/usr/local/bin:$PATH"
 
 echo ""
 echo "╔═══════════════════════════════════════════════════════════╗"
@@ -700,21 +709,20 @@ echo "║                                                           ║"
 echo "╚═══════════════════════════════════════════════════════════╝"
 echo ""
 BASHRC
-chown spoq:spoq /home/spoq/.bashrc
 
-# 12. Configure firewall
+# 13. Configure firewall
 ufw allow 22    # SSH
 ufw allow 80    # HTTP (for Let's Encrypt verification)
 ufw allow 443   # HTTPS
 ufw --force enable
 
-# 13. Install Caddy
+# 14. Install Caddy
 apt-get install -y debian-keyring debian-archive-keyring apt-transport-https
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
 apt-get update && apt-get install -y caddy
 
-# 14. Configure Caddy
+# 15. Configure Caddy
 cat > /etc/caddy/Caddyfile << EOF
 $HOSTNAME {{
     reverse_proxy localhost:8080 {{

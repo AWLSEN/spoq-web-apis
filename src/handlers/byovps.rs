@@ -23,6 +23,7 @@ use crate::services::registration;
 use crate::models::UserVps;
 use crate::services::cloudflare::CloudflareService;
 use crate::services::ssh_installer::{SshConfig, SshInstallerService};
+use std::time::Duration;
 
 /// Request to provision a BYOVPS (Bring Your Own VPS)
 #[derive(Debug, Deserialize)]
@@ -128,6 +129,146 @@ fn is_valid_ipv6(ip: &str) -> bool {
 /// Validate IP address (IPv4 or IPv6)
 fn is_valid_ip(ip: &str) -> bool {
     is_valid_ipv4(ip) || is_valid_ipv6(ip)
+}
+
+/// Health check response from Conductor
+#[derive(Debug, Deserialize)]
+struct HealthCheckResponse {
+    status: String,
+    #[serde(default)]
+    registered: bool,
+}
+
+/// Poll the health endpoint until it returns 200 OK or timeout is reached.
+///
+/// This is the definitive success marker for provisioning:
+/// - If https://{hostname}/health returns 200, everything is working:
+///   - DNS resolved correctly
+///   - Caddy is running with valid TLS
+///   - Conductor is running and registered
+///
+/// # Arguments
+/// * `hostname` - The VPS hostname (e.g., "username.spoq.dev")
+/// * `max_attempts` - Maximum number of polling attempts
+/// * `initial_delay_secs` - Initial delay between attempts (will increase)
+///
+/// # Returns
+/// * `Ok(true)` - Health check passed
+/// * `Ok(false)` - Health check failed after all attempts
+async fn poll_health_endpoint(
+    hostname: &str,
+    max_attempts: u32,
+    initial_delay_secs: u64,
+) -> Result<bool, String> {
+    let health_url = format!("https://{}/health", hostname);
+
+    // Build HTTP client with reasonable timeouts
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .danger_accept_invalid_certs(false) // Require valid TLS
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    tracing::info!(
+        "Starting health check polling for {} (max {} attempts)",
+        health_url,
+        max_attempts
+    );
+
+    let mut delay_secs = initial_delay_secs;
+
+    for attempt in 1..=max_attempts {
+        tracing::debug!(
+            "Health check attempt {}/{} for {} (waiting {}s first)",
+            attempt,
+            max_attempts,
+            hostname,
+            delay_secs
+        );
+
+        // Wait before each attempt (services need time to start)
+        tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+
+        match client.get(&health_url).send().await {
+            Ok(response) => {
+                let status = response.status();
+
+                if status.is_success() {
+                    // Try to parse the response body for extra validation
+                    if let Ok(health) = response.json::<HealthCheckResponse>().await {
+                        if health.status == "healthy" && health.registered {
+                            tracing::info!(
+                                "Health check passed for {} on attempt {}: status={}, registered={}",
+                                hostname,
+                                attempt,
+                                health.status,
+                                health.registered
+                            );
+                            return Ok(true);
+                        } else {
+                            tracing::debug!(
+                                "Health check returned 200 but not fully ready: status={}, registered={}",
+                                health.status,
+                                health.registered
+                            );
+                        }
+                    } else {
+                        // 200 OK is good enough even if body parsing fails
+                        tracing::info!(
+                            "Health check passed for {} on attempt {} (200 OK)",
+                            hostname,
+                            attempt
+                        );
+                        return Ok(true);
+                    }
+                } else if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+                    // 503 means Conductor is running but still initializing
+                    tracing::debug!(
+                        "Health check {}: Conductor initializing (503), will retry...",
+                        hostname
+                    );
+                } else {
+                    tracing::debug!(
+                        "Health check {}: unexpected status {}, will retry...",
+                        hostname,
+                        status
+                    );
+                }
+            }
+            Err(e) => {
+                // Connection errors are expected while services are starting
+                let error_kind = if e.is_connect() {
+                    "connection refused"
+                } else if e.is_timeout() {
+                    "timeout"
+                } else if e.is_request() {
+                    "request error"
+                } else {
+                    "unknown error"
+                };
+
+                tracing::debug!(
+                    "Health check {} attempt {}/{}: {} - {}",
+                    hostname,
+                    attempt,
+                    max_attempts,
+                    error_kind,
+                    e
+                );
+            }
+        }
+
+        // Increase delay for next attempt (capped at 30 seconds)
+        delay_secs = std::cmp::min(delay_secs + 5, 30);
+    }
+
+    tracing::warn!(
+        "Health check failed for {} after {} attempts",
+        hostname,
+        max_attempts
+    );
+
+    Ok(false)
 }
 
 /// Provision a BYOVPS (Bring Your Own VPS) for the authenticated user
@@ -324,13 +465,13 @@ pub async fn provision_byovps(
         .with_timeout(60) // 60 seconds connection timeout
         .with_exec_timeout(600); // 10 minutes for script execution
 
-    let (script_success, script_output, final_status) = match SshInstallerService::connect(ssh_config) {
+    // Execute the install script via SSH
+    let (script_exit_code, script_output) = match SshInstallerService::connect(ssh_config) {
         Ok(ssh) => {
             tracing::info!("SSH connection established to {}", req.vps_ip);
 
             match ssh.execute_script(&script_content) {
                 Ok(result) => {
-                    let success = result.is_success();
                     let mut output = if !result.stdout.is_empty() {
                         // Truncate output to last 2000 chars for response
                         let stdout = &result.stdout;
@@ -345,69 +486,85 @@ pub async fn provision_byovps(
                         None
                     };
 
-                    // If output is empty or script failed, try to read the log file
-                    if !success || output.is_none() {
-                        tracing::info!("Attempting to read /var/log/spoq-setup.log from {}", req.vps_ip);
-                        match ssh.execute_command("tail -100 /var/log/spoq-setup.log 2>/dev/null || echo 'Log file not found'") {
-                            Ok(log_result) if !log_result.stdout.is_empty() => {
-                                let log_output = log_result.stdout.trim();
-                                if !log_output.is_empty() && log_output != "Log file not found" {
-                                    output = Some(format!(
-                                        "Script exit code: {}\n\n=== Last 100 lines of /var/log/spoq-setup.log ===\n{}",
-                                        result.exit_code,
-                                        log_output
-                                    ));
-                                    tracing::info!("Successfully retrieved setup log from {}", req.vps_ip);
-                                } else if output.is_none() {
-                                    output = Some(format!("Script failed with exit code {} (no output captured)", result.exit_code));
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!("Failed to read log file from {}: {}", req.vps_ip, e);
-                                if output.is_none() {
-                                    output = Some(format!("Script failed with exit code {} (log file inaccessible)", result.exit_code));
-                                }
-                            }
-                            _ => {
-                                if output.is_none() {
-                                    output = Some(format!("Script failed with exit code {} (no log output)", result.exit_code));
-                                }
+                    // Always try to read the log file for better diagnostics
+                    tracing::info!("Reading /var/log/spoq-setup.log from {}", req.vps_ip);
+                    match ssh.execute_command("tail -100 /var/log/spoq-setup.log 2>/dev/null || echo 'Log file not found'") {
+                        Ok(log_result) if !log_result.stdout.is_empty() => {
+                            let log_output = log_result.stdout.trim();
+                            if !log_output.is_empty() && log_output != "Log file not found" {
+                                output = Some(format!(
+                                    "Script exit code: {}\n\n=== Last 100 lines of /var/log/spoq-setup.log ===\n{}",
+                                    result.exit_code,
+                                    log_output
+                                ));
                             }
                         }
+                        _ => {}
                     }
 
-                    if success {
-                        tracing::info!(
-                            "BYOVPS script executed successfully on {}",
-                            req.vps_ip
-                        );
-                        (true, output, "ready")
-                    } else {
-                        tracing::error!(
-                            "BYOVPS script failed on {} with exit code {}",
-                            req.vps_ip,
-                            result.exit_code
-                        );
-                        (false, output, "failed")
-                    }
+                    tracing::info!(
+                        "BYOVPS script completed on {} with exit code {}",
+                        req.vps_ip,
+                        result.exit_code
+                    );
+
+                    (result.exit_code, output)
                 }
                 Err(e) => {
                     tracing::error!("Failed to execute script on {}: {}", req.vps_ip, e);
-                    (false, Some(format!("Script execution error: {}", e)), "failed")
+                    (-1, Some(format!("Script execution error: {}", e)))
                 }
             }
         }
         Err(e) => {
             tracing::error!("Failed to SSH into {}: {}", req.vps_ip, e);
-            (
-                false,
-                Some(format!("SSH connection failed: {}", e)),
-                "failed",
-            )
+            (-2, Some(format!("SSH connection failed: {}", e)))
         }
     };
 
-    // Update VPS status based on script result
+    // ========================================================================
+    // HEALTH CHECK POLLING - The definitive success marker
+    // ========================================================================
+    // Regardless of script exit code, poll the health endpoint to verify
+    // the entire stack is working: DNS → Caddy → TLS → Conductor
+    //
+    // Poll for ~5 minutes total:
+    // - 20 attempts with increasing delays (10s, 15s, 20s, 25s, 30s...)
+    // - First attempt after 10 seconds to allow services to start
+    // ========================================================================
+
+    tracing::info!(
+        "Starting health check polling for {} (script exit code: {})",
+        hostname,
+        script_exit_code
+    );
+
+    let health_check_passed = match poll_health_endpoint(&hostname, 20, 10).await {
+        Ok(passed) => passed,
+        Err(e) => {
+            tracing::error!("Health check polling error for {}: {}", hostname, e);
+            false
+        }
+    };
+
+    // Determine final status based on health check (not script exit code)
+    let (script_success, final_status) = if health_check_passed {
+        tracing::info!(
+            "BYOVPS provisioning succeeded for {} (health check passed, script exit code: {})",
+            hostname,
+            script_exit_code
+        );
+        (true, "ready")
+    } else {
+        tracing::error!(
+            "BYOVPS provisioning failed for {} (health check failed after 5 minutes, script exit code: {})",
+            hostname,
+            script_exit_code
+        );
+        (false, "failed")
+    };
+
+    // Update VPS status based on health check result
     let now = chrono::Utc::now();
     if final_status == "ready" {
         sqlx::query(
@@ -465,14 +622,22 @@ pub async fn provision_byovps(
         .unwrap_or_else(|| chrono::Utc::now())
         .to_rfc3339();
 
-    // Build the response message
+    // Build the response message with helpful next steps
     let message = if script_success {
         format!(
-            "BYOVPS provisioned successfully. Your VPS is accessible at {}",
+            "BYOVPS provisioned successfully! Your VPS is accessible at https://{}",
             hostname
         )
     } else {
-        "BYOVPS provisioning failed. Check the script output for details.".to_string()
+        format!(
+            "BYOVPS provisioning could not be verified after 5 minutes.\n\n\
+            Next steps:\n\
+            1. Wait 5 more minutes and retry - services may still be starting\n\
+            2. SSH into your VPS and check: systemctl status conductor caddy\n\
+            3. If issues persist, email support@spoq.dev with your hostname: {}\n\n\
+            The install script may have completed but DNS/TLS setup can take time.",
+            hostname
+        )
     };
 
     let response = ProvisionByovpsResponse {
