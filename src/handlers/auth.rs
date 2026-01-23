@@ -59,7 +59,21 @@ pub struct RefreshRequest {
     pub refresh_token: String,
 }
 
-/// Response from the refresh endpoint.
+/// Consistent token response structure for both device token and refresh endpoints.
+/// Matches the credential file structure defined in SETUP_FLOW.md.
+#[derive(Debug, Serialize)]
+pub struct TokenResponse {
+    /// The access token (JWT)
+    pub access_token: String,
+    /// The refresh token
+    pub refresh_token: String,
+    /// Token expiration as Unix timestamp
+    pub expires_at: i64,
+    /// The user's ID
+    pub user_id: String,
+}
+
+/// Response from the refresh endpoint (legacy compatibility).
 #[derive(Debug, Serialize)]
 pub struct RefreshResponse {
     /// New access token
@@ -125,21 +139,14 @@ pub struct DeviceTokenRequest {
     pub grant_type: String,
 }
 
-/// Response from device token endpoint.
+/// Error response for device token endpoint.
 #[derive(Debug, Serialize)]
-pub struct DeviceTokenResponse {
-    /// The access token (if approved)
+pub struct DeviceTokenError {
+    /// Error code
+    pub error: String,
+    /// Optional error description
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub access_token: Option<String>,
-    /// The refresh token (if approved)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub refresh_token: Option<String>,
-    /// Token type (always "Bearer" if approved)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub token_type: Option<String>,
-    /// Error code (if not approved)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    pub error_description: Option<String>,
 }
 
 /// Name of the cookie used to store OAuth state.
@@ -385,12 +392,23 @@ pub async fn github_callback(
         .finish()
 }
 
+/// Error response for refresh token endpoint.
+#[derive(Debug, Serialize)]
+pub struct RefreshTokenError {
+    /// Error code
+    pub error: String,
+    /// Optional error description
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_description: Option<String>,
+}
+
 /// Refreshes an access token using a valid refresh token.
 ///
 /// # Process
 /// 1. Looks up all non-revoked, non-expired tokens for comparison
 /// 2. Verifies the provided token against stored hashes
-/// 3. Generates a new access token if valid
+/// 3. Generates a new access token and refresh token if valid
+/// 4. Returns TokenResponse with same structure as device_token endpoint
 ///
 /// # Arguments
 ///
@@ -399,49 +417,140 @@ pub async fn github_callback(
 ///
 /// # Returns
 ///
-/// A JSON response with a new access token, or an error
+/// On success: JSON TokenResponse with access_token, refresh_token, expires_at, user_id
+/// On error: JSON RefreshTokenError with error code and optional description
 pub async fn refresh_token(
     body: web::Json<RefreshRequest>,
     data: web::Data<AppState>,
 ) -> HttpResponse {
-    // Find all valid (non-expired, non-revoked) refresh tokens
-    let rows = match sqlx::query(
+    // First, check if the token exists but is expired (for better error messages)
+    let expired_check = sqlx::query(
         r#"
-        SELECT id, user_id, token_hash
+        SELECT id, user_id, token_hash, expires_at
         FROM refresh_tokens
-        WHERE expires_at > NOW()
-          AND revoked_at IS NULL
+        WHERE revoked_at IS NULL
         "#,
     )
     .fetch_all(&data.pool)
-    .await
-    {
+    .await;
+
+    let rows = match expired_check {
         Ok(rows) => rows,
         Err(e) => {
             tracing::error!("Database error while fetching tokens: {:?}", e);
-            return HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "Internal server error"}));
+            return HttpResponse::InternalServerError().json(RefreshTokenError {
+                error: "server_error".to_string(),
+                error_description: Some("An internal error occurred".to_string()),
+            });
         }
     };
 
     // Find matching token by verifying hash
     let mut matched_user_id: Option<Uuid> = None;
+    let mut matched_token_id: Option<Uuid> = None;
+    let mut is_expired = false;
 
     for row in rows {
         let token_hash: String = row.get("token_hash");
         if verify_token(&body.refresh_token, &token_hash) {
-            matched_user_id = Some(row.get("user_id"));
+            let expires_at: chrono::DateTime<Utc> = row.get("expires_at");
+            if expires_at < Utc::now() {
+                is_expired = true;
+                matched_token_id = Some(row.get("id"));
+            } else {
+                matched_user_id = Some(row.get("user_id"));
+                matched_token_id = Some(row.get("id"));
+            }
             break;
         }
     }
 
-    let user_id = match matched_user_id {
-        Some(id) => id,
-        None => {
-            return HttpResponse::Unauthorized()
-                .json(serde_json::json!({"error": "Invalid or expired refresh token"}));
+    // Handle expired token case
+    if is_expired {
+        // Revoke the expired token
+        if let Some(token_id) = matched_token_id {
+            let _ = sqlx::query(
+                r#"
+                UPDATE refresh_tokens
+                SET revoked_at = NOW()
+                WHERE id = $1
+                "#,
+            )
+            .bind(token_id)
+            .execute(&data.pool)
+            .await;
+        }
+
+        return HttpResponse::Unauthorized().json(RefreshTokenError {
+            error: "expired_token".to_string(),
+            error_description: Some("The refresh token has expired. Please re-authenticate.".to_string()),
+        });
+    }
+
+    let (user_id, old_token_id) = match (matched_user_id, matched_token_id) {
+        (Some(uid), Some(tid)) => (uid, tid),
+        _ => {
+            return HttpResponse::Unauthorized().json(RefreshTokenError {
+                error: "invalid_grant".to_string(),
+                error_description: Some("Invalid refresh token".to_string()),
+            });
         }
     };
+
+    // Revoke the old refresh token (token rotation for security)
+    if let Err(e) = sqlx::query(
+        r#"
+        UPDATE refresh_tokens
+        SET revoked_at = NOW()
+        WHERE id = $1
+        "#,
+    )
+    .bind(old_token_id)
+    .execute(&data.pool)
+    .await
+    {
+        tracing::error!("Failed to revoke old refresh token: {:?}", e);
+        // Continue anyway - this is not critical
+    }
+
+    // Generate new refresh token
+    let new_refresh_token = generate_refresh_token();
+    let new_token_hash = match hash_token(&new_refresh_token) {
+        Ok(hash) => hash,
+        Err(e) => {
+            tracing::error!("Failed to hash new token: {:?}", e);
+            return HttpResponse::InternalServerError().json(RefreshTokenError {
+                error: "server_error".to_string(),
+                error_description: Some("Failed to generate new tokens".to_string()),
+            });
+        }
+    };
+
+    // Calculate refresh token expiration (for database storage)
+    let refresh_token_expires_at = Utc::now() + Duration::days(data.config.jwt_refresh_token_expiry_days);
+
+    // Store new refresh token hash in database
+    if let Err(e) = sqlx::query(
+        r#"
+        INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
+        VALUES ($1, $2, $3)
+        "#,
+    )
+    .bind(user_id)
+    .bind(&new_token_hash)
+    .bind(refresh_token_expires_at)
+    .execute(&data.pool)
+    .await
+    {
+        tracing::error!("Failed to store new refresh token: {:?}", e);
+        return HttpResponse::InternalServerError().json(RefreshTokenError {
+            error: "server_error".to_string(),
+            error_description: Some("Failed to store new tokens".to_string()),
+        });
+    }
+
+    // Calculate access token expiration (for response)
+    let access_token_expires_at = Utc::now().timestamp() + data.config.jwt_access_token_expiry_secs;
 
     // Generate new access token
     let access_token = match create_access_token(
@@ -452,12 +561,19 @@ pub async fn refresh_token(
         Ok(token) => token,
         Err(e) => {
             tracing::error!("Failed to create access token: {:?}", e);
-            return HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "Failed to generate access token"}));
+            return HttpResponse::InternalServerError().json(RefreshTokenError {
+                error: "server_error".to_string(),
+                error_description: Some("Failed to generate access token".to_string()),
+            });
         }
     };
 
-    HttpResponse::Ok().json(RefreshResponse { access_token })
+    HttpResponse::Ok().json(TokenResponse {
+        access_token,
+        refresh_token: new_refresh_token,
+        expires_at: access_token_expires_at,
+        user_id: user_id.to_string(),
+    })
 }
 
 /// Revokes a refresh token.
@@ -842,10 +958,10 @@ fn redirect_to_github_login(word_code: &str, data: &web::Data<AppState>) -> Http
 /// 1. Validates the grant_type is "device_code"
 /// 2. Looks up the device grant by device code
 /// 3. Returns appropriate response based on status:
-///    - pending: {"error": "authorization_pending"}
-///    - denied: {"error": "access_denied"}
-///    - expired: {"error": "expired_token"}
-///    - approved: Generate and return access_token + refresh_token
+///    - pending: {"error": "authorization_pending"} with HTTP 400
+///    - denied: {"error": "access_denied"} with HTTP 400
+///    - expired: {"error": "expired_token"} with HTTP 400
+///    - approved: Generate and return TokenResponse with access_token, refresh_token, expires_at, user_id
 ///
 /// # Request Body
 ///
@@ -854,18 +970,17 @@ fn redirect_to_github_login(word_code: &str, data: &web::Data<AppState>) -> Http
 ///
 /// # Returns
 ///
-/// JSON response with tokens or error
+/// On success: JSON TokenResponse with access_token, refresh_token, expires_at, user_id
+/// On error: JSON DeviceTokenError with error code and optional description
 pub async fn device_token(
     body: web::Json<DeviceTokenRequest>,
     data: web::Data<AppState>,
 ) -> HttpResponse {
     // Validate grant_type
     if body.grant_type != "device_code" {
-        return HttpResponse::BadRequest().json(DeviceTokenResponse {
-            access_token: None,
-            refresh_token: None,
-            token_type: None,
-            error: Some("unsupported_grant_type".to_string()),
+        return HttpResponse::BadRequest().json(DeviceTokenError {
+            error: "unsupported_grant_type".to_string(),
+            error_description: Some("grant_type must be 'device_code'".to_string()),
         });
     }
 
@@ -873,47 +988,37 @@ pub async fn device_token(
     let grant = match get_device_grant_by_device_code(&data.pool, &body.device_code).await {
         Ok(Some(g)) => g,
         Ok(None) => {
-            return HttpResponse::BadRequest().json(DeviceTokenResponse {
-                access_token: None,
-                refresh_token: None,
-                token_type: None,
-                error: Some("invalid_grant".to_string()),
+            return HttpResponse::BadRequest().json(DeviceTokenError {
+                error: "invalid_grant".to_string(),
+                error_description: Some("Device code not found or invalid".to_string()),
             });
         }
         Err(e) => {
             tracing::error!("Database error: {:?}", e);
-            return HttpResponse::InternalServerError().json(DeviceTokenResponse {
-                access_token: None,
-                refresh_token: None,
-                token_type: None,
-                error: Some("server_error".to_string()),
+            return HttpResponse::InternalServerError().json(DeviceTokenError {
+                error: "server_error".to_string(),
+                error_description: Some("An internal error occurred".to_string()),
             });
         }
     };
 
     // Check if expired
     if grant.is_expired() {
-        return HttpResponse::BadRequest().json(DeviceTokenResponse {
-            access_token: None,
-            refresh_token: None,
-            token_type: None,
-            error: Some("expired_token".to_string()),
+        return HttpResponse::BadRequest().json(DeviceTokenError {
+            error: "expired_token".to_string(),
+            error_description: Some("The device code has expired. Please restart the authorization flow.".to_string()),
         });
     }
 
     // Check status
     match grant.status {
-        DeviceGrantStatus::Pending => HttpResponse::BadRequest().json(DeviceTokenResponse {
-            access_token: None,
-            refresh_token: None,
-            token_type: None,
-            error: Some("authorization_pending".to_string()),
+        DeviceGrantStatus::Pending => HttpResponse::BadRequest().json(DeviceTokenError {
+            error: "authorization_pending".to_string(),
+            error_description: None,
         }),
-        DeviceGrantStatus::Denied => HttpResponse::BadRequest().json(DeviceTokenResponse {
-            access_token: None,
-            refresh_token: None,
-            token_type: None,
-            error: Some("access_denied".to_string()),
+        DeviceGrantStatus::Denied => HttpResponse::Forbidden().json(DeviceTokenError {
+            error: "access_denied".to_string(),
+            error_description: Some("The user denied the authorization request".to_string()),
         }),
         DeviceGrantStatus::Approved => {
             // Get user ID from the grant
@@ -921,11 +1026,9 @@ pub async fn device_token(
                 Some(id) => id,
                 None => {
                     tracing::error!("Approved grant without user_id: {:?}", grant.id);
-                    return HttpResponse::InternalServerError().json(DeviceTokenResponse {
-                        access_token: None,
-                        refresh_token: None,
-                        token_type: None,
-                        error: Some("server_error".to_string()),
+                    return HttpResponse::InternalServerError().json(DeviceTokenError {
+                        error: "server_error".to_string(),
+                        error_description: Some("Grant approved but user_id missing".to_string()),
                     });
                 }
             };
@@ -936,17 +1039,15 @@ pub async fn device_token(
                 Ok(hash) => hash,
                 Err(e) => {
                     tracing::error!("Failed to hash token: {:?}", e);
-                    return HttpResponse::InternalServerError().json(DeviceTokenResponse {
-                        access_token: None,
-                        refresh_token: None,
-                        token_type: None,
-                        error: Some("server_error".to_string()),
+                    return HttpResponse::InternalServerError().json(DeviceTokenError {
+                        error: "server_error".to_string(),
+                        error_description: Some("Failed to generate tokens".to_string()),
                     });
                 }
             };
 
-            // Calculate expiration
-            let expires_at = Utc::now() + Duration::days(data.config.jwt_refresh_token_expiry_days);
+            // Calculate refresh token expiration (for database storage)
+            let refresh_token_expires_at = Utc::now() + Duration::days(data.config.jwt_refresh_token_expiry_days);
 
             // Store refresh token hash in database
             if let Err(e) = sqlx::query(
@@ -957,18 +1058,19 @@ pub async fn device_token(
             )
             .bind(user_id)
             .bind(&token_hash)
-            .bind(expires_at)
+            .bind(refresh_token_expires_at)
             .execute(&data.pool)
             .await
             {
                 tracing::error!("Failed to store refresh token: {:?}", e);
-                return HttpResponse::InternalServerError().json(DeviceTokenResponse {
-                    access_token: None,
-                    refresh_token: None,
-                    token_type: None,
-                    error: Some("server_error".to_string()),
+                return HttpResponse::InternalServerError().json(DeviceTokenError {
+                    error: "server_error".to_string(),
+                    error_description: Some("Failed to store tokens".to_string()),
                 });
             }
+
+            // Calculate access token expiration (for response)
+            let access_token_expires_at = Utc::now().timestamp() + data.config.jwt_access_token_expiry_secs;
 
             // Generate JWT access token
             let access_token = match create_access_token(
@@ -979,20 +1081,18 @@ pub async fn device_token(
                 Ok(token) => token,
                 Err(e) => {
                     tracing::error!("Failed to create access token: {:?}", e);
-                    return HttpResponse::InternalServerError().json(DeviceTokenResponse {
-                        access_token: None,
-                        refresh_token: None,
-                        token_type: None,
-                        error: Some("server_error".to_string()),
+                    return HttpResponse::InternalServerError().json(DeviceTokenError {
+                        error: "server_error".to_string(),
+                        error_description: Some("Failed to create access token".to_string()),
                     });
                 }
             };
 
-            HttpResponse::Ok().json(DeviceTokenResponse {
-                access_token: Some(access_token),
-                refresh_token: Some(refresh_token),
-                token_type: Some("Bearer".to_string()),
-                error: None,
+            HttpResponse::Ok().json(TokenResponse {
+                access_token,
+                refresh_token,
+                expires_at: access_token_expires_at,
+                user_id: user_id.to_string(),
             })
         }
     }
@@ -1084,33 +1184,51 @@ mod tests {
     }
 
     #[test]
-    fn test_device_token_response_success_serialization() {
-        let resp = DeviceTokenResponse {
-            access_token: Some("jwt_token".to_string()),
-            refresh_token: Some("spoq_refresh".to_string()),
-            token_type: Some("Bearer".to_string()),
-            error: None,
+    fn test_token_response_serialization() {
+        let resp = TokenResponse {
+            access_token: "jwt_token".to_string(),
+            refresh_token: "spoq_refresh".to_string(),
+            expires_at: 1700000000,
+            user_id: "user-123".to_string(),
         };
         let json = serde_json::to_string(&resp).expect("Failed to serialize");
         assert!(json.contains("\"access_token\":\"jwt_token\""));
         assert!(json.contains("\"refresh_token\":\"spoq_refresh\""));
-        assert!(json.contains("\"token_type\":\"Bearer\""));
-        assert!(!json.contains("error"));
+        assert!(json.contains("\"expires_at\":1700000000"));
+        assert!(json.contains("\"user_id\":\"user-123\""));
     }
 
     #[test]
-    fn test_device_token_response_error_serialization() {
-        let resp = DeviceTokenResponse {
-            access_token: None,
-            refresh_token: None,
-            token_type: None,
-            error: Some("authorization_pending".to_string()),
+    fn test_device_token_error_serialization() {
+        let resp = DeviceTokenError {
+            error: "authorization_pending".to_string(),
+            error_description: None,
         };
         let json = serde_json::to_string(&resp).expect("Failed to serialize");
         assert!(json.contains("\"error\":\"authorization_pending\""));
-        assert!(!json.contains("access_token"));
-        assert!(!json.contains("refresh_token"));
-        assert!(!json.contains("token_type"));
+        assert!(!json.contains("error_description"));
+    }
+
+    #[test]
+    fn test_device_token_error_with_description_serialization() {
+        let resp = DeviceTokenError {
+            error: "access_denied".to_string(),
+            error_description: Some("User denied the request".to_string()),
+        };
+        let json = serde_json::to_string(&resp).expect("Failed to serialize");
+        assert!(json.contains("\"error\":\"access_denied\""));
+        assert!(json.contains("\"error_description\":\"User denied the request\""));
+    }
+
+    #[test]
+    fn test_refresh_token_error_serialization() {
+        let resp = RefreshTokenError {
+            error: "expired_token".to_string(),
+            error_description: Some("The refresh token has expired".to_string()),
+        };
+        let json = serde_json::to_string(&resp).expect("Failed to serialize");
+        assert!(json.contains("\"error\":\"expired_token\""));
+        assert!(json.contains("\"error_description\":\"The refresh token has expired\""));
     }
 
     #[test]
