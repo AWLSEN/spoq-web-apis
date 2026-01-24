@@ -666,36 +666,14 @@ pub async fn get_vps_status(
                             }
                         }
 
+                        // Map Hostinger VM state to VPS status
+                        // Note: Health check is now handled by CLI directly
+                        // VPS is only saved to DB after CLI calls /api/vps/confirm
                         match vm.state.as_str() {
                             "installing" | "starting" | "stopping" => "provisioning".to_string(),
-                            "running" => {
-                                if vps.conductor_verified_at.is_none() {
-                                    // Do health check - only mark ready if conductor is healthy
-                                    let http_client = Client::builder()
-                                        .timeout(Duration::from_secs(5))
-                                        .build()
-                                        .map_err(|e| AppError::Internal(format!("Failed to create HTTP client: {}", e)))?;
-
-                                    let health_url = format!("https://{}/health", vps.hostname);
-                                    match http_client.get(&health_url).send().await {
-                                        Ok(resp) if resp.status().is_success() => {
-                                            // Health check passed - mark as ready
-                                            sqlx::query(
-                                                "UPDATE user_vps SET conductor_verified_at = NOW(), status = 'ready', ready_at = COALESCE(ready_at, NOW()) WHERE id = $1"
-                                            )
-                                            .bind(vps.id)
-                                            .execute(pool.get_ref())
-                                            .await?;
-                                            "ready".to_string()
-                                        }
-                                        _ => "provisioning".to_string(), // Health check failed, keep polling
-                                    }
-                                } else {
-                                    "ready".to_string() // Already verified
-                                }
-                            }
+                            "running" => vps.status.clone(), // Return DB status (should be 'ready' if confirmed)
                             "stopped" => "stopped".to_string(),
-                            _ => "provisioning".to_string(),
+                            _ => vps.status.clone(), // Return DB status for unknown states
                         }
                     }
                     Err(e) => {
