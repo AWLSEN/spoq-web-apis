@@ -19,7 +19,6 @@ use crate::config::Config;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthenticatedUser;
 use crate::services::hostinger::generate_post_install_script;
-use crate::services::registration;
 use crate::models::UserVps;
 use crate::services::cloudflare::CloudflareService;
 use crate::services::ssh_installer::{SshConfig, SshInstallerService};
@@ -437,30 +436,9 @@ pub async fn provision_byovps(
         );
     }
 
-    // Generate registration code for Conductor self-registration
-    let registration_code = registration::generate_registration_code();
-    let registration_code_hash = registration::hash_code(&registration_code)
-        .map_err(|e| AppError::Internal(format!("Failed to hash registration code: {}", e)))?;
-    let registration_expires_at = chrono::Utc::now() + chrono::Duration::minutes(15);
-
-    // Update VPS record with registration info
-    sqlx::query(
-        r#"UPDATE user_vps
-           SET registration_code_hash = $1,
-               registration_expires_at = $2
-           WHERE id = $3"#,
-    )
-    .bind(&registration_code_hash)
-    .bind(registration_expires_at)
-    .bind(vps_id)
-    .execute(pool.get_ref())
-    .await?;
-
-    // Generate the post-install script
+    // Generate the post-install script (config written directly, no registration needed)
     let script_content = generate_post_install_script(
         &req.ssh_password,
-        &registration_code,
-        "https://spoq-api-production.up.railway.app",
         &hostname,
         "https://download.spoq.dev/conductor",
         &config.jwt_secret,
