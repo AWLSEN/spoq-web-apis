@@ -429,6 +429,26 @@ pub async fn provision_byovps(
                 // Continue anyway - DNS is not critical for BYOVPS
             }
         }
+
+        // Create wildcard DNS record for subdomains (e.g., *.username.spoq.dev)
+        match cf.update_wildcard_dns_record(&subdomain, &req.vps_ip).await {
+            Ok(record) => {
+                tracing::info!(
+                    "Wildcard DNS record created/updated: *.{}.spoq.dev -> {} (id: {})",
+                    subdomain,
+                    req.vps_ip,
+                    record.id
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to create wildcard DNS record for *.{}.spoq.dev: {}",
+                    subdomain,
+                    e
+                );
+                // Continue anyway - wildcard DNS is not critical for BYOVPS
+            }
+        }
     } else {
         tracing::warn!(
             "Cloudflare not configured - skipping DNS record creation for {}",

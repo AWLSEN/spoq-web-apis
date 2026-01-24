@@ -475,6 +475,22 @@ pub async fn get_vps_status(
                                         // Continue anyway - DNS is not critical
                                     }
                                 }
+
+                                // Create wildcard DNS record for subdomains (*.username.spoq.dev)
+                                match cf.update_wildcard_dns_record(&subdomain, ip).await {
+                                    Ok(record) => {
+                                        tracing::info!(
+                                            "Wildcard DNS record created/updated: *.{}.spoq.dev -> {} (id: {})",
+                                            subdomain,
+                                            ip,
+                                            record.id
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Failed to create wildcard DNS record for *.{}.spoq.dev: {}", subdomain, e);
+                                        // Continue anyway - wildcard DNS is not critical
+                                    }
+                                }
                             }
 
                             // Reload VPS data
@@ -524,6 +540,22 @@ pub async fn get_vps_status(
                                     Err(e) => {
                                         tracing::error!("Failed to create DNS record for {}: {}", vps.hostname, e);
                                         // Continue anyway - DNS is not critical
+                                    }
+                                }
+
+                                // Create wildcard DNS record for subdomains (*.username.spoq.dev)
+                                match cf.update_wildcard_dns_record(&subdomain, ip).await {
+                                    Ok(record) => {
+                                        tracing::info!(
+                                            "Wildcard DNS record created/updated: *.{}.spoq.dev -> {} (id: {})",
+                                            subdomain,
+                                            ip,
+                                            record.id
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Failed to create wildcard DNS record for *.{}.spoq.dev: {}", subdomain, e);
+                                        // Continue anyway - wildcard DNS is not critical
                                     }
                                 }
                             }
