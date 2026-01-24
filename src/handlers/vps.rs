@@ -583,7 +583,7 @@ pub async fn get_vps_status(
                                             .await?;
                                             "ready".to_string()
                                         }
-                                        _ => "configuring".to_string(), // Health check failed, still starting
+                                        _ => "provisioning".to_string(), // Health check failed, keep polling
                                     }
                                 } else {
                                     "ready".to_string() // Already verified
