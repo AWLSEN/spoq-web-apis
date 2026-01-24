@@ -766,12 +766,6 @@ mod tests {
             "owner-123",
         );
 
-        // Print for debugging
-        println!("\n=== SCRIPT EXCERPT ===");
-        if let Some(pos) = script.find("http://") {
-            println!("{}", &script[pos..pos+200.min(script.len()-pos)]);
-        }
-
         assert!(script.contains("TestPassword123!"));
         assert!(script.contains("test.spoq.dev"));
         assert!(script.contains("[auth]"));  // auth section in config
