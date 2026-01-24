@@ -3,7 +3,6 @@
 //! This module contains all the route handlers:
 //! - `auth` - GitHub OAuth and device flow authentication handlers
 //! - `health` - Health check endpoint
-//! - `internal` - Internal API for conductor registration
 //! - `vps` - VPS provisioning and management handlers
 //! - `byovps` - BYOVPS (Bring Your Own VPS) provisioning handlers
 //! - `admin` - Temporary admin endpoints (NO AUTH - remove after cleanup!)
@@ -13,7 +12,6 @@ pub mod admin;
 pub mod auth;
 pub mod byovps;
 pub mod health;
-pub mod internal;
 pub mod payment;
 pub mod vps;
 pub mod webhooks;

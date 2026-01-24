@@ -134,8 +134,6 @@ fn is_valid_ip(ip: &str) -> bool {
 #[derive(Debug, Deserialize)]
 struct HealthCheckResponse {
     status: String,
-    #[serde(default)]
-    registered: bool,
 }
 
 /// Poll the health endpoint until it returns 200 OK or timeout is reached.
@@ -144,7 +142,7 @@ struct HealthCheckResponse {
 /// - If https://{hostname}/health returns 200, everything is working:
 ///   - DNS resolved correctly
 ///   - Caddy is running with valid TLS
-///   - Conductor is running and registered
+///   - Conductor is running and healthy
 ///
 /// # Arguments
 /// * `hostname` - The VPS hostname (e.g., "username.spoq.dev")
@@ -195,20 +193,18 @@ async fn poll_health_endpoint(
                 if status.is_success() {
                     // Try to parse the response body for extra validation
                     if let Ok(health) = response.json::<HealthCheckResponse>().await {
-                        if health.status == "healthy" && health.registered {
+                        if health.status == "healthy" {
                             tracing::info!(
-                                "Health check passed for {} on attempt {}: status={}, registered={}",
+                                "Health check passed for {} on attempt {}: status={}",
                                 hostname,
                                 attempt,
-                                health.status,
-                                health.registered
+                                health.status
                             );
                             return Ok(true);
                         } else {
                             tracing::debug!(
-                                "Health check returned 200 but not fully ready: status={}, registered={}",
-                                health.status,
-                                health.registered
+                                "Health check returned 200 but status not healthy: status={}",
+                                health.status
                             );
                         }
                     } else {

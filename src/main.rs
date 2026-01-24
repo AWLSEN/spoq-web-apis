@@ -26,8 +26,7 @@ use spoq_web_apis::handlers::{
     // Webhook handlers
     stripe_webhook,
 };
-use spoq_web_apis::handlers::internal::register_conductor;
-use spoq_web_apis::middleware::{create_rate_limiter, create_internal_rate_limiter};
+use spoq_web_apis::middleware::create_rate_limiter;
 use spoq_web_apis::services::{CloudflareService, HostingerClient, StripeClientService};
 
 #[actix_web::main]
@@ -108,9 +107,8 @@ async fn main() -> std::io::Result<()> {
     tracing::info!("Starting server at http://{}", server_addr);
 
     HttpServer::new(move || {
-        // Create rate limiters for each worker (Governor doesn't implement Clone)
+        // Create rate limiter for each worker (Governor doesn't implement Clone)
         let rate_limiter = create_rate_limiter();
-        let internal_rate_limiter = create_internal_rate_limiter();
 
         let mut app = App::new()
             .app_data(app_state.clone())
@@ -138,12 +136,6 @@ async fn main() -> std::io::Result<()> {
                     .route("/verify", web::get().to(device_verify))
                     .route("/authorize", web::post().to(device_authorize))
                     .route("/device/token", web::post().to(device_token)),
-            )
-            // Internal routes for conductor registration (unauthenticated, rate limited)
-            .service(
-                web::scope("/internal")
-                    .wrap(internal_rate_limiter)
-                    .route("/conductor/register", web::post().to(register_conductor)),
             );
 
         // Add Cloudflare client if configured

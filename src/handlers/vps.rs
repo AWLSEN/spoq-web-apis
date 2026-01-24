@@ -564,11 +564,8 @@ pub async fn get_vps_status(
                         match vm.state.as_str() {
                             "installing" | "starting" | "stopping" => "provisioning".to_string(),
                             "running" => {
-                                if vps.registered_at.is_none() {
-                                    // Waiting for Conductor to call /register
-                                    "registering".to_string()
-                                } else if vps.conductor_verified_at.is_none() {
-                                    // Registered but not verified - do health check
+                                if vps.conductor_verified_at.is_none() {
+                                    // Do health check - only mark ready if conductor is healthy
                                     let http_client = Client::builder()
                                         .timeout(Duration::from_secs(5))
                                         .build()
@@ -577,7 +574,7 @@ pub async fn get_vps_status(
                                     let health_url = format!("https://{}/health", vps.hostname);
                                     match http_client.get(&health_url).send().await {
                                         Ok(resp) if resp.status().is_success() => {
-                                            // Update conductor_verified_at
+                                            // Health check passed - mark as ready
                                             sqlx::query(
                                                 "UPDATE user_vps SET conductor_verified_at = NOW(), status = 'ready', ready_at = COALESCE(ready_at, NOW()) WHERE id = $1"
                                             )
@@ -652,13 +649,13 @@ pub async fn get_vps_precheck(
 
     match vps {
         Some(vps) => {
-            // Determine health status based on conductor_verified_at
+            // Determine health status based on conductor_verified_at or health check
             let healthy = if vps.status == "failed" {
                 Some(false)
             } else if vps.conductor_verified_at.is_some() {
                 Some(true)
-            } else if vps.registered_at.is_some() {
-                // Registered but not verified - do a quick health check
+            } else {
+                // Not yet verified - do a quick health check
                 let http_client = Client::builder()
                     .timeout(Duration::from_secs(3))
                     .build()
@@ -669,7 +666,7 @@ pub async fn get_vps_precheck(
                 let health_url = format!("https://{}/health", vps.hostname);
                 match http_client.get(&health_url).send().await {
                     Ok(resp) if resp.status().is_success() => {
-                        // Update conductor_verified_at in the background
+                        // Health check passed - mark as ready
                         sqlx::query(
                             "UPDATE user_vps SET conductor_verified_at = NOW(), status = 'ready', ready_at = COALESCE(ready_at, NOW()) WHERE id = $1"
                         )
@@ -680,9 +677,6 @@ pub async fn get_vps_precheck(
                     }
                     _ => Some(false),
                 }
-            } else {
-                // Not yet registered, health unknown
-                None
             };
 
             Ok(HttpResponse::Ok().json(VpsPrecheckResponse::from_vps(&vps, healthy)))
