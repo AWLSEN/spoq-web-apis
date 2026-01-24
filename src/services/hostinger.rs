@@ -691,15 +691,7 @@ cat > /root/.bashrc << 'BASHRC'
 export PATH="/root/.local/bin:/usr/local/bin:$PATH"
 
 echo ""
-echo "╔═══════════════════════════════════════════════════════════╗"
-echo "║                    Welcome to Spoq!                       ║"
-echo "║                                                           ║"
-echo "║  Commands:                                                ║"
-echo "║    spoq ask \"your question\"  - Ask AI anything            ║"
-echo "║    spoq run                  - Run a task                 ║"
-echo "║    spoq help                 - Show all commands          ║"
-echo "║                                                           ║"
-echo "╚═══════════════════════════════════════════════════════════╝"
+echo "  · spoq vps ·"
 echo ""
 BASHRC
 

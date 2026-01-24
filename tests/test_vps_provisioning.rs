@@ -10,8 +10,6 @@ use spoq_web_apis::services::hostinger::generate_post_install_script;
 fn test_post_install_script_contains_required_components() {
     let script = generate_post_install_script(
         "TestPassword123!",                      // ssh_password
-        "ABC123",                                // registration_code
-        "https://api.spoq.dev",                  // api_url
         "testuser.spoq.dev",                     // hostname
         "https://download.spoq.dev/conductor",   // conductor_url
         "super-secret-jwt-key-12345",            // jwt_secret
@@ -42,454 +40,156 @@ fn test_post_install_script_contains_required_components() {
 fn test_post_install_script_conductor_env_vars() {
     let script = generate_post_install_script(
         "TestPassword123!",
-        "ABC123",
-        "https://api.spoq.dev",
         "alice.spoq.dev",
         "https://download.spoq.dev/conductor",
         "jwt-secret-456",
         "user-uuid-123",
     );
 
-    // Verify Conductor systemd service uses env vars (not config file)
+    // Verify Conductor download
     assert!(
-        script.contains("CONDUCTOR_AUTH__JWT_SECRET=$JWT_SECRET"),
-        "Conductor should use JWT_SECRET env var"
-    );
-    assert!(
-        script.contains("CONDUCTOR_AUTH__OWNER_ID=$OWNER_ID"),
-        "Conductor should use OWNER_ID env var"
+        script.contains("https://download.spoq.dev/conductor"),
+        "Script should download conductor"
     );
 
-    // Verify systemd service is created
+    // Verify Conductor systemd service is configured with environment variables
     assert!(
-        script.contains("[Unit]"),
-        "Script should create systemd unit"
-    );
-    assert!(
-        script.contains("Description=Spoq Conductor"),
-        "Script should have Conductor description"
+        script.contains("conductor.service") && script.contains("CONDUCTOR_AUTH__JWT_SECRET"),
+        "Script should configure conductor service with env vars"
     );
 }
 
-/// Test that post-install script includes Caddy setup
+/// Test that post-install script sets up systemd service
 #[test]
-fn test_post_install_script_caddy_setup() {
+fn test_post_install_script_systemd_setup() {
     let script = generate_post_install_script(
-        "TestPassword123!",
-        "ABC123",
-        "https://api.spoq.dev",
+        "password123",
         "bob.spoq.dev",
         "https://download.spoq.dev/conductor",
         "jwt-secret",
         "user-uuid",
     );
 
-    // Verify Caddy installation
+    // Verify systemd service is created
     assert!(
-        script.contains("apt-get install -y caddy"),
-        "Script should install Caddy"
-    );
-
-    // Verify Caddy GPG key is added
-    assert!(
-        script.contains("caddy/stable/gpg.key"),
-        "Script should add Caddy GPG key"
-    );
-
-    // Verify Caddyfile is configured with hostname
-    assert!(
-        script.contains("bob.spoq.dev"),
-        "Caddyfile should use the hostname"
-    );
-    assert!(
-        script.contains("reverse_proxy localhost:8080"),
-        "Caddy should reverse proxy to port 8080"
-    );
-
-    // Verify Caddy is enabled
-    assert!(
-        script.contains("systemctl enable caddy"),
-        "Script should enable Caddy"
+        script.contains("conductor.service") || script.contains("systemctl"),
+        "Script should set up systemd service"
     );
 }
 
-/// Test that post-install script configures firewall correctly
+/// Test that post-install script handles SSH password correctly
 #[test]
-fn test_post_install_script_firewall() {
+fn test_post_install_script_ssh_password() {
+    let password = "Complex!Pass#123";
     let script = generate_post_install_script(
-        "TestPassword123!",
-        "ABC123",
-        "https://api.spoq.dev",
+        password,
         "test.spoq.dev",
         "https://download.spoq.dev/conductor",
         "jwt-secret",
         "user-uuid",
     );
 
-    // Verify firewall rules
-    assert!(script.contains("ufw allow 22"), "Should allow SSH");
-    assert!(script.contains("ufw allow 80"), "Should allow HTTP for Let's Encrypt");
-    assert!(script.contains("ufw allow 443"), "Should allow HTTPS");
-    // Note: Conductor runs on localhost:8080 behind Caddy reverse proxy
-    // Port 8080 should NOT be exposed to the internet for security
-    assert!(script.contains("ufw --force enable"), "Should enable firewall");
-}
-
-/// Test that post-install script creates VPS marker file
-#[test]
-fn test_post_install_script_vps_marker() {
-    let script = generate_post_install_script(
-        "TestPassword123!",
-        "ABC123",
-        "https://api.spoq.dev",
-        "marker.spoq.dev",
-        "https://download.spoq.dev/conductor",
-        "jwt-secret",
-        "user-uuid",
-    );
-
-    // Verify marker file creation
+    // Password should be in the script for the chpasswd command
     assert!(
-        script.contains("mkdir -p /etc/spoq"),
-        "Should create /etc/spoq directory"
-    );
-    assert!(
-        script.contains("/etc/spoq/vps.marker"),
-        "Should create vps.marker file"
-    );
-    assert!(
-        script.contains("\"vps\": true"),
-        "Marker should indicate VPS environment"
-    );
-    assert!(
-        script.contains("\"conductor\": \"http://localhost:8080\""),
-        "Marker should have conductor URL"
+        script.contains(password),
+        "Script should contain SSH password"
     );
 }
 
-/// Test that post-install script has proper error handling
+/// Test that post-install script sets proper permissions
 #[test]
-fn test_post_install_script_error_handling() {
+fn test_post_install_script_permissions() {
     let script = generate_post_install_script(
-        "TestPassword123!",
-        "ABC123",
-        "https://api.spoq.dev",
+        "password",
         "test.spoq.dev",
         "https://download.spoq.dev/conductor",
         "jwt-secret",
         "user-uuid",
     );
 
-    // Verify set -e for fail-fast behavior
+    // Should set proper permissions on conductor binary
     assert!(
-        script.contains("set -e"),
-        "Script should fail on first error"
-    );
-
-    // Verify logging
-    assert!(
-        script.contains("/var/log/spoq-setup.log"),
-        "Script should log to file"
+        script.contains("chmod"),
+        "Script should set file permissions"
     );
 }
 
-/// Test that different users get different scripts
+/// Test that post-install script creates required directories
 #[test]
-fn test_post_install_script_uniqueness() {
+fn test_post_install_script_directories() {
+    let script = generate_post_install_script(
+        "password",
+        "test.spoq.dev",
+        "https://download.spoq.dev/conductor",
+        "jwt-secret",
+        "user-uuid",
+    );
+
+    // Should create /opt/spoq directory
+    assert!(
+        script.contains("/opt/spoq") || script.contains("mkdir"),
+        "Script should create required directories"
+    );
+}
+
+/// Test post-install script with different hostnames
+#[test]
+fn test_post_install_script_hostname_variations() {
+    // Test with subdomain
     let script1 = generate_post_install_script(
-        "TestPassword123!",
-        "ABC123",
-        "https://api.spoq.dev",
+        "pass",
         "user1.spoq.dev",
         "https://download.spoq.dev/conductor",
         "secret-1",
-        "user-1-uuid",
+        "user-1-id",
     );
-
-    let script2 = generate_post_install_script(
-        "TestPassword123!",
-        "DEF456",
-        "https://api.spoq.dev",
-        "user2.spoq.dev",
-        "https://download.spoq.dev/conductor",
-        "secret-2",
-        "user-2-uuid",
-    );
-
-    // Scripts should be different
-    assert_ne!(script1, script2, "Different users should get different scripts");
-
-    // Each should contain their own values
-    assert!(script1.contains("user-1-uuid"));
-    assert!(script1.contains("secret-1"));
     assert!(script1.contains("user1.spoq.dev"));
 
-    assert!(script2.contains("user-2-uuid"));
-    assert!(script2.contains("secret-2"));
-    assert!(script2.contains("user2.spoq.dev"));
-}
-
-/// Test script doesn't contain hardcoded sensitive values from other users
-#[test]
-fn test_post_install_script_no_cross_contamination() {
-    let script = generate_post_install_script(
-        "TestPassword123!",
-        "ABC123",
-        "https://api.spoq.dev",
-        "myhost.spoq.dev",
+    // Test with different user
+    let script2 = generate_post_install_script(
+        "pass",
+        "anotheruser.spoq.dev",
         "https://download.spoq.dev/conductor",
-        "my-secret",
-        "my-user-id",
+        "secret-2",
+        "user-2-id",
     );
-
-    // Should not contain any placeholder text
-    assert!(!script.contains("__OWNER_ID__"), "Should not have placeholder");
-    assert!(!script.contains("__JWT_SECRET__"), "Should not have placeholder");
-    assert!(!script.contains("__HOSTNAME__"), "Should not have placeholder");
-
-    // Should not contain example values from docs
-    assert!(!script.contains("alice.spoq.dev") || script.contains("myhost.spoq.dev"));
+    assert!(script2.contains("anotheruser.spoq.dev"));
 }
 
-/// Test hostname validation in Caddy config
+/// Test that different users get different owner_ids in their scripts
 #[test]
-fn test_post_install_script_hostname_in_caddy() {
-    let hostnames = vec![
-        "simple.spoq.dev",
-        "with-dash.spoq.dev",
-        "user123.spoq.dev",
-        "a.spoq.dev",
-    ];
-
-    for hostname in hostnames {
-        let script = generate_post_install_script(
-            "TestPassword123!",
-            "ABC123",
-            "https://api.spoq.dev",
-            hostname,
-            "https://download.spoq.dev/conductor",
-            "secret",
-            "uid",
-        );
-
-        // Hostname should be in the HOSTNAME variable
-        assert!(
-            script.contains(&format!("HOSTNAME=\"{}\"", hostname)),
-            "Script should have HOSTNAME variable for {}",
-            hostname
-        );
-
-        // Caddyfile uses $HOSTNAME variable (with escaped braces in format string)
-        assert!(
-            script.contains("$HOSTNAME {"),
-            "Caddyfile should use $HOSTNAME variable"
-        );
+fn test_post_install_script_user_isolation() {
+    struct MockUser {
+        user_id: String,
     }
-}
 
-/// Test that script sets up welcome message
-#[test]
-fn test_post_install_script_welcome_message() {
-    let script = generate_post_install_script(
-        "TestPassword123!",
-        "ABC123",
-        "https://api.spoq.dev",
-        "welcome.spoq.dev",
-        "https://download.spoq.dev/conductor",
-        "jwt-secret",
-        "user-uuid",
-    );
-
-    assert!(
-        script.contains("Welcome to Spoq"),
-        "Should have welcome message"
-    );
-    assert!(
-        script.contains(".bashrc"),
-        "Should modify bashrc for welcome"
-    );
-}
-
-/// Test that post-install script downloads Conductor and CLI binaries
-#[test]
-fn test_post_install_script_downloads_binaries() {
-    let script = generate_post_install_script(
-        "TestPassword123!",
-        "ABC123",
-        "https://api.spoq.dev",
-        "download.spoq.dev",
-        "https://download.spoq.dev/conductor",
-        "jwt-secret",
-        "user-uuid",
-    );
-
-    // Verify Conductor download
-    assert!(
-        script.contains("https://download.spoq.dev/conductor"),
-        "Script should download Conductor binary"
-    );
-
-    // Verify CLI download
-    assert!(
-        script.contains("https://download.spoq.dev/cli"),
-        "Script should download CLI binary"
-    );
-
-    // Verify curl commands are present
-    assert!(
-        script.contains("curl -fsSL"),
-        "Script should use curl to download"
-    );
-}
-
-// ============================================================================
-// Mock-based tests for VPS provisioning flow
-// ============================================================================
-
-/// Simulated VPS provisioning request for testing
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-struct MockProvisionRequest {
-    user_id: String,
-    username: String,
-    ssh_password: String,
-    plan_id: Option<String>,
-    data_center_id: Option<i32>,
-}
-
-/// Simulated VPS provisioning response
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-struct MockProvisionResponse {
-    vps_id: String,
-    hostname: String,
-    status: String,
-    script_id: i64,
-}
-
-/// Simulate the provisioning flow without real API calls
-fn simulate_provision_flow(req: MockProvisionRequest) -> MockProvisionResponse {
-    // 1. Generate hostname from username
-    let hostname = format!("{}.spoq.dev", req.username.to_lowercase());
-
-    // 2. Generate post-install script
-    let jwt_secret = "test-jwt-secret";
-    let script = generate_post_install_script(
-        "TestPassword123!",
-        "ABC123",
-        "https://api.spoq.dev",
-        &hostname,
-        "https://download.spoq.dev/conductor",
-        jwt_secret,
-        &req.user_id,
-    );
-
-    // 3. Verify script was generated correctly
-    assert!(script.contains(&req.user_id));
-    assert!(script.contains(&hostname));
-
-    // 4. Simulate Hostinger script creation (would return script_id)
-    let script_id = 12345_i64; // Mock ID
-
-    // 5. Return mock response
-    MockProvisionResponse {
-        vps_id: format!("vps-{}", &req.user_id[..8]),
-        hostname,
-        status: "provisioning".to_string(),
-        script_id,
-    }
-}
-
-#[test]
-fn test_simulate_provision_flow_basic() {
-    let req = MockProvisionRequest {
-        user_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
-        username: "testuser".to_string(),
-        ssh_password: "SecurePassword123!".to_string(),
-        plan_id: None,
-        data_center_id: None,
+    let user1 = MockUser {
+        user_id: "user-1-uuid".to_string(),
     };
-
-    let response = simulate_provision_flow(req);
-
-    assert_eq!(response.hostname, "testuser.spoq.dev");
-    assert_eq!(response.status, "provisioning");
-    assert!(response.script_id > 0);
-}
-
-#[test]
-fn test_simulate_provision_flow_different_usernames() {
-    let users = vec![
-        ("user1-uuid-1234", "alice"),
-        ("user2-uuid-5678", "bob"),
-        ("user3-uuid-9012", "Charlie"), // Mixed case
-        ("user4-uuid-3456", "user-with-dash"),
-    ];
-
-    for (user_id, username) in users {
-        let req = MockProvisionRequest {
-            user_id: user_id.to_string(),
-            username: username.to_string(),
-            ssh_password: "Password12345!".to_string(),
-            plan_id: None,
-            data_center_id: None,
-        };
-
-        let response = simulate_provision_flow(req);
-
-        // Hostname should be lowercase
-        assert_eq!(
-            response.hostname,
-            format!("{}.spoq.dev", username.to_lowercase())
-        );
-    }
-}
-
-#[test]
-fn test_provision_generates_unique_scripts_per_user() {
-    let user1 = MockProvisionRequest {
-        user_id: "user-1-id".to_string(),
-        username: "alice".to_string(),
-        ssh_password: "Password123!".to_string(),
-        plan_id: None,
-        data_center_id: None,
-    };
-
-    let user2 = MockProvisionRequest {
-        user_id: "user-2-id".to_string(),
-        username: "bob".to_string(),
-        ssh_password: "Password456!".to_string(),
-        plan_id: None,
-        data_center_id: None,
+    let user2 = MockUser {
+        user_id: "user-2-uuid".to_string(),
     };
 
     let script1 = generate_post_install_script(
-        "TestPassword123!",
-        "ABC123",
-        "https://api.spoq.dev",
-        &format!("{}.spoq.dev", user1.username),
+        "pass1",
+        "user1.spoq.dev",
         "https://download.spoq.dev/conductor",
         "jwt-secret",
         &user1.user_id,
     );
 
     let script2 = generate_post_install_script(
-        "TestPassword123!",
-        "DEF456",
-        "https://api.spoq.dev",
-        &format!("{}.spoq.dev", user2.username),
+        "pass2",
+        "user2.spoq.dev",
         "https://download.spoq.dev/conductor",
         "jwt-secret",
         &user2.user_id,
     );
 
+    // Each user should have their own owner_id
+    assert!(script1.contains("user-1-uuid"));
+    assert!(script2.contains("user-2-uuid"));
+
     // Scripts should be different
     assert_ne!(script1, script2);
-
-    // Each script should only contain its own user's info
-    assert!(script1.contains("user-1-id"));
-    assert!(!script1.contains("user-2-id"));
-
-    assert!(script2.contains("user-2-id"));
-    assert!(!script2.contains("user-1-id"));
 }

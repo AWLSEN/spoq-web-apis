@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Authorize CLI Login - spoq</title>
+    <title>Authorize Device — spoq</title>
     <style>
         * {
             margin: 0;
@@ -12,86 +12,132 @@
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background-color: #0d1117;
-            color: #c9d1d9;
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            background: linear-gradient(180deg, #f5f5f7 0%, #ffffff 100%);
+            color: #1d1d1f;
             min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
-            padding: 20px;
+            padding: 24px;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }
 
         .container {
-            max-width: 600px;
+            max-width: 480px;
             width: 100%;
-            background-color: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 12px;
-            padding: 32px;
+            background: #ffffff;
+            border-radius: 20px;
+            padding: 48px 40px;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+        }
+
+        .logo {
+            text-align: center;
+            margin-bottom: 32px;
+        }
+
+        .logo-text {
+            font-size: 28px;
+            font-weight: 600;
+            letter-spacing: -0.5px;
+            color: #1d1d1f;
         }
 
         .header {
             text-align: center;
-            margin-bottom: 32px;
+            margin-bottom: 40px;
         }
 
         .header h1 {
-            color: #58a6ff;
-            font-size: 24px;
+            font-size: 28px;
+            font-weight: 600;
+            color: #1d1d1f;
+            letter-spacing: -0.5px;
             margin-bottom: 8px;
         }
 
         .header p {
-            color: #8b949e;
-            font-size: 14px;
+            font-size: 17px;
+            color: #86868b;
+            font-weight: 400;
+            line-height: 1.4;
         }
 
         .device-info {
-            background-color: #0d1117;
-            border: 1px solid #30363d;
-            border-radius: 6px;
-            padding: 16px;
+            background: #f5f5f7;
+            border-radius: 12px;
+            padding: 16px 20px;
             margin-bottom: 24px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .device-icon {
+            width: 40px;
+            height: 40px;
+            background: #ffffff;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+        }
+
+        .device-icon svg {
+            width: 20px;
+            height: 20px;
+            color: #1d1d1f;
+        }
+
+        .device-details {
+            flex: 1;
         }
 
         .device-info .label {
             font-size: 12px;
-            color: #8b949e;
+            color: #86868b;
             text-transform: uppercase;
             letter-spacing: 0.5px;
-            margin-bottom: 8px;
+            font-weight: 500;
+            margin-bottom: 2px;
         }
 
         .device-info .value {
-            font-size: 16px;
-            color: #c9d1d9;
-            font-weight: 600;
+            font-size: 15px;
+            color: #1d1d1f;
+            font-weight: 500;
         }
 
-        .word-code-container {
-            background-color: #0d1117;
-            border: 2px solid #58a6ff;
-            border-radius: 8px;
-            padding: 24px;
-            margin-bottom: 32px;
+        .code-section {
             text-align: center;
+            margin-bottom: 32px;
         }
 
-        .word-code-label {
-            font-size: 12px;
-            color: #8b949e;
+        .code-label {
+            font-size: 13px;
+            color: #86868b;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.8px;
+            font-weight: 500;
             margin-bottom: 12px;
         }
 
-        .word-code {
+        .code-display {
+            background: linear-gradient(135deg, #f5f5f7 0%, #fafafa 100%);
+            border-radius: 16px;
+            padding: 24px 32px;
+            display: inline-block;
+        }
+
+        .code-value {
             font-size: 32px;
-            font-weight: 700;
-            color: #58a6ff;
-            font-family: 'SF Mono', 'Consolas', 'Liberation Mono', Menlo, monospace;
-            letter-spacing: 2px;
+            font-weight: 600;
+            color: #0071e3;
+            font-family: 'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace;
+            letter-spacing: 3px;
         }
 
         .buttons {
@@ -102,143 +148,199 @@
 
         .btn {
             flex: 1;
-            padding: 14px 24px;
+            padding: 16px 24px;
             border: none;
-            border-radius: 6px;
-            font-weight: 600;
-            font-size: 14px;
+            border-radius: 12px;
+            font-weight: 500;
+            font-size: 17px;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: all 0.2s ease;
+            font-family: inherit;
         }
 
         .btn-approve {
-            background-color: #238636;
+            background: #0071e3;
             color: #ffffff;
         }
 
         .btn-approve:hover {
-            background-color: #2ea043;
+            background: #0077ed;
+            transform: scale(1.01);
         }
 
         .btn-approve:active {
-            background-color: #238636;
+            background: #006edb;
+            transform: scale(0.99);
         }
 
         .btn-deny {
-            background-color: #da3633;
-            color: #ffffff;
+            background: #f5f5f7;
+            color: #1d1d1f;
         }
 
         .btn-deny:hover {
-            background-color: #e54640;
+            background: #e8e8ed;
         }
 
         .btn-deny:active {
-            background-color: #da3633;
+            background: #d2d2d7;
         }
 
         .btn-github {
             width: 100%;
-            padding: 14px 24px;
-            background-color: #238636;
+            padding: 16px 24px;
+            background: #0071e3;
             border: none;
-            border-radius: 6px;
+            border-radius: 12px;
             color: #ffffff;
-            font-weight: 600;
-            font-size: 14px;
+            font-weight: 500;
+            font-size: 17px;
             cursor: pointer;
-            transition: background-color 0.2s;
+            transition: all 0.2s ease;
             text-decoration: none;
-            display: inline-block;
-            text-align: center;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            font-family: inherit;
         }
 
         .btn-github:hover {
-            background-color: #2ea043;
+            background: #0077ed;
+            transform: scale(1.01);
         }
 
-        .success-state {
-            text-align: center;
-            padding: 24px;
+        .btn-github:active {
+            background: #006edb;
+            transform: scale(0.99);
         }
 
-        .success-state .icon {
-            font-size: 64px;
-            color: #238636;
-            margin-bottom: 16px;
+        .btn-github svg {
+            width: 20px;
+            height: 20px;
         }
 
-        .success-state .message {
-            font-size: 18px;
-            color: #238636;
-            font-weight: 600;
-            margin-bottom: 8px;
+        .hint {
+            background: #f5f5f7;
+            border-radius: 12px;
+            padding: 16px 20px;
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
         }
 
-        .success-state .sub-message {
+        .hint-icon {
+            width: 20px;
+            height: 20px;
+            color: #0071e3;
+            flex-shrink: 0;
+            margin-top: 1px;
+        }
+
+        .hint-text {
             font-size: 14px;
-            color: #8b949e;
+            color: #515154;
+            line-height: 1.5;
         }
 
-        .denied-state {
-            text-align: center;
-            padding: 24px;
-        }
-
-        .denied-state .icon {
-            font-size: 64px;
-            color: #da3633;
-            margin-bottom: 16px;
-        }
-
-        .denied-state .message {
-            font-size: 18px;
-            color: #da3633;
+        .hint-text strong {
+            color: #1d1d1f;
             font-weight: 600;
+        }
+
+        .result-state {
+            text-align: center;
+            padding: 32px 0;
+        }
+
+        .result-icon {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 24px;
+        }
+
+        .result-icon.success {
+            background: linear-gradient(135deg, #34c759 0%, #30d158 100%);
+        }
+
+        .result-icon.error {
+            background: linear-gradient(135deg, #ff3b30 0%, #ff453a 100%);
+        }
+
+        .result-icon svg {
+            width: 40px;
+            height: 40px;
+            color: #ffffff;
+        }
+
+        .result-title {
+            font-size: 24px;
+            font-weight: 600;
+            color: #1d1d1f;
             margin-bottom: 8px;
+            letter-spacing: -0.3px;
         }
 
-        .denied-state .sub-message {
-            font-size: 14px;
-            color: #8b949e;
+        .result-message {
+            font-size: 17px;
+            color: #86868b;
+            line-height: 1.4;
         }
 
-        .error-state {
-            background-color: rgba(218, 54, 51, 0.15);
-            border: 1px solid #da3633;
-            border-radius: 6px;
-            padding: 16px;
+        .error-box {
+            background: #fff5f5;
+            border-radius: 12px;
+            padding: 20px;
             margin-bottom: 24px;
         }
 
-        .error-state .title {
-            font-size: 14px;
-            color: #f85149;
+        .error-title {
+            font-size: 15px;
+            color: #ff3b30;
             font-weight: 600;
-            margin-bottom: 8px;
+            margin-bottom: 6px;
         }
 
-        .error-state .message {
-            font-size: 13px;
-            color: #f85149;
-        }
-
-        .info {
-            background-color: rgba(88, 166, 255, 0.15);
-            border: 1px solid #58a6ff;
-            border-radius: 6px;
-            padding: 12px 16px;
-            font-size: 13px;
-            color: #79c0ff;
-        }
-
-        .info strong {
-            display: block;
-            margin-bottom: 4px;
+        .error-message {
+            font-size: 14px;
+            color: #86868b;
+            line-height: 1.5;
         }
 
         .hidden {
             display: none;
+        }
+
+        @media (max-width: 520px) {
+            .container {
+                padding: 32px 24px;
+                border-radius: 16px;
+            }
+
+            .header h1 {
+                font-size: 24px;
+            }
+
+            .code-value {
+                font-size: 24px;
+                letter-spacing: 2px;
+            }
+
+            .code-display {
+                padding: 20px 24px;
+            }
+
+            .buttons {
+                flex-direction: column;
+            }
+
+            .btn {
+                padding: 14px 20px;
+            }
         }
     </style>
 </head>
@@ -246,19 +348,32 @@
     <div class="container">
         <!-- Pending State (default) -->
         <div id="pendingState" class="{{#if (eq STATE 'pending')}}{{else}}hidden{{/if}}">
+            <div class="logo">
+                <span class="logo-text">spoq</span>
+            </div>
+
             <div class="header">
-                <h1>Authorize CLI Login</h1>
-                <p>Confirm this device to access your spoq account</p>
+                <h1>Authorize Device</h1>
+                <p>A device is requesting access to your account</p>
             </div>
 
             <div class="device-info">
-                <div class="label">Device</div>
-                <div class="value">{{HOSTNAME}}</div>
+                <div class="device-icon">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z" />
+                    </svg>
+                </div>
+                <div class="device-details">
+                    <div class="label">Device</div>
+                    <div class="value">{{HOSTNAME}}</div>
+                </div>
             </div>
 
-            <div class="word-code-container">
-                <div class="word-code-label">Verification Code</div>
-                <div class="word-code">{{WORD_CODE}}</div>
+            <div class="code-section">
+                <div class="code-label">Verification Code</div>
+                <div class="code-display">
+                    <span class="code-value">{{WORD_CODE}}</span>
+                </div>
             </div>
 
             <form method="POST" action="/auth/authorize">
@@ -269,64 +384,102 @@
                 </div>
             </form>
 
-            <div class="info">
-                <strong>Security Tip</strong>
-                Verify this code matches what's shown in your CLI before approving.
+            <div class="hint">
+                <svg class="hint-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+                </svg>
+                <div class="hint-text">
+                    <strong>Security tip:</strong> Verify this code matches what's shown in your terminal before approving.
+                </div>
             </div>
         </div>
 
         <!-- Not Logged In State -->
         <div id="notLoggedInState" class="{{#if (eq STATE 'not_logged_in')}}{{else}}hidden{{/if}}">
+            <div class="logo">
+                <span class="logo-text">spoq</span>
+            </div>
+
             <div class="header">
-                <h1>Authorize CLI Login</h1>
+                <h1>Sign In Required</h1>
                 <p>Sign in to authorize this device</p>
             </div>
 
             <div class="device-info">
-                <div class="label">Device</div>
-                <div class="value">{{HOSTNAME}}</div>
+                <div class="device-icon">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z" />
+                    </svg>
+                </div>
+                <div class="device-details">
+                    <div class="label">Device</div>
+                    <div class="value">{{HOSTNAME}}</div>
+                </div>
             </div>
 
-            <div class="word-code-container">
-                <div class="word-code-label">Verification Code</div>
-                <div class="word-code">{{WORD_CODE}}</div>
+            <div class="code-section">
+                <div class="code-label">Verification Code</div>
+                <div class="code-display">
+                    <span class="code-value">{{WORD_CODE}}</span>
+                </div>
             </div>
 
-            <a href="{{LOGIN_URL}}" class="btn-github">Login with GitHub</a>
+            <a href="{{LOGIN_URL}}" class="btn-github">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+                </svg>
+                Continue with GitHub
+            </a>
 
-            <div class="info" style="margin-top: 24px;">
-                <strong>Security Tip</strong>
-                After logging in, you'll be able to approve or deny this device.
+            <div class="hint" style="margin-top: 24px;">
+                <svg class="hint-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" />
+                </svg>
+                <div class="hint-text">
+                    After signing in, you'll be able to approve or deny this device.
+                </div>
             </div>
         </div>
 
         <!-- Success State -->
         <div id="successState" class="{{#if (eq STATE 'success')}}{{else}}hidden{{/if}}">
-            <div class="success-state">
-                <div class="icon">✓</div>
-                <div class="message">Device Authorized!</div>
-                <div class="sub-message">You can close this tab now.</div>
+            <div class="result-state">
+                <div class="result-icon success">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                    </svg>
+                </div>
+                <div class="result-title">Device Authorized</div>
+                <div class="result-message">You can close this tab and return to your terminal.</div>
             </div>
         </div>
 
         <!-- Denied State -->
         <div id="deniedState" class="{{#if (eq STATE 'denied')}}{{else}}hidden{{/if}}">
-            <div class="denied-state">
-                <div class="icon">✗</div>
-                <div class="message">Authorization Denied</div>
-                <div class="sub-message">The device authorization request was denied.</div>
+            <div class="result-state">
+                <div class="result-icon error">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </div>
+                <div class="result-title">Authorization Denied</div>
+                <div class="result-message">The device request was declined. You can close this tab.</div>
             </div>
         </div>
 
         <!-- Error State -->
         <div id="errorState" class="{{#if (eq STATE 'error')}}{{else}}hidden{{/if}}">
-            <div class="header">
-                <h1>Authorization Error</h1>
+            <div class="logo">
+                <span class="logo-text">spoq</span>
             </div>
 
-            <div class="error-state">
-                <div class="title">Unable to Process Request</div>
-                <div class="message">{{ERROR_MESSAGE}}</div>
+            <div class="header">
+                <h1>Something Went Wrong</h1>
+            </div>
+
+            <div class="error-box">
+                <div class="error-title">Unable to process request</div>
+                <div class="error-message">{{ERROR_MESSAGE}}</div>
             </div>
         </div>
     </div>

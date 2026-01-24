@@ -182,8 +182,6 @@ fn test_byovps_script_generation_basic() {
 
     let script = generate_post_install_script(
         "TestPassword123!",
-        "ABC123",
-        "https://api.spoq.dev",
         hostname,
         "https://download.spoq.dev/conductor",
         jwt_secret,
@@ -200,8 +198,6 @@ fn test_byovps_script_generation_basic() {
 fn test_byovps_script_includes_conductor_setup() {
     let script = generate_post_install_script(
         "TestPassword123!",
-        "ABC123",
-        "https://api.spoq.dev",
         "bob.spoq.dev",
         "https://download.spoq.dev/conductor",
         "jwt-secret",
@@ -221,8 +217,6 @@ fn test_byovps_script_includes_conductor_setup() {
 fn test_byovps_script_includes_cli_setup() {
     let script = generate_post_install_script(
         "TestPassword123!",
-        "ABC123",
-        "https://api.spoq.dev",
         "charlie.spoq.dev",
         "https://download.spoq.dev/conductor",
         "jwt-secret",
@@ -240,8 +234,6 @@ fn test_byovps_script_includes_cli_setup() {
 fn test_byovps_script_includes_caddy_reverse_proxy() {
     let script = generate_post_install_script(
         "TestPassword123!",
-        "ABC123",
-        "https://api.spoq.dev",
         "diana.spoq.dev",
         "https://download.spoq.dev/conductor",
         "jwt-secret",
@@ -262,8 +254,6 @@ fn test_byovps_script_includes_caddy_reverse_proxy() {
 fn test_byovps_script_includes_firewall_setup() {
     let script = generate_post_install_script(
         "TestPassword123!",
-        "ABC123",
-        "https://api.spoq.dev",
         "test.spoq.dev",
         "https://download.spoq.dev/conductor",
         "jwt-secret",
@@ -283,8 +273,6 @@ fn test_byovps_script_includes_firewall_setup() {
 fn test_byovps_script_creates_vps_marker() {
     let script = generate_post_install_script(
         "TestPassword123!",
-        "ABC123",
-        "https://api.spoq.dev",
         "marker.spoq.dev",
         "https://download.spoq.dev/conductor",
         "jwt-secret",
@@ -301,8 +289,6 @@ fn test_byovps_script_creates_vps_marker() {
 fn test_byovps_script_different_users_get_different_scripts() {
     let script1 = generate_post_install_script(
         "TestPassword123!",
-        "ABC123",
-        "https://api.spoq.dev",
         "user1.spoq.dev",
         "https://download.spoq.dev/conductor",
         "secret-1",
@@ -311,8 +297,6 @@ fn test_byovps_script_different_users_get_different_scripts() {
 
     let script2 = generate_post_install_script(
         "TestPassword456!",
-        "DEF456",
-        "https://api.spoq.dev",
         "user2.spoq.dev",
         "https://download.spoq.dev/conductor",
         "secret-2",
