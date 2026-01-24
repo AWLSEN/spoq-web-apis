@@ -717,6 +717,10 @@ $HOSTNAME {{
         header_up X-Forwarded-From caddy
     }}
 }}
+
+http://*.$HOSTNAME {{
+    reverse_proxy localhost:{{labels.3}}
+}}
 EOF
 
 systemctl enable caddy
@@ -762,6 +766,12 @@ mod tests {
             "owner-123",
         );
 
+        // Print for debugging
+        println!("\n=== SCRIPT EXCERPT ===");
+        if let Some(pos) = script.find("http://") {
+            println!("{}", &script[pos..pos+200.min(script.len()-pos)]);
+        }
+
         assert!(script.contains("TestPassword123!"));
         assert!(script.contains("test.spoq.dev"));
         assert!(script.contains("[auth]"));  // auth section in config
@@ -769,6 +779,9 @@ mod tests {
         assert!(script.contains("owner_id"));
         assert!(script.contains("systemctl enable conductor"));
         assert!(script.contains("systemctl enable caddy"));
+        // Check for wildcard HTTP block with dynamic routing
+        assert!(script.contains("http://*."));
+        assert!(script.contains("reverse_proxy localhost:{labels.3}"));
     }
 
     #[test]

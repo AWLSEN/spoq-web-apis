@@ -233,4 +233,153 @@ impl CloudflareService {
             Err(e) => Err(e),
         }
     }
+
+    /// Create a wildcard A record: *.{subdomain}.spoq.dev -> ip_address
+    pub async fn create_wildcard_dns_record(
+        &self,
+        subdomain: &str,
+        ip_address: &str,
+    ) -> Result<DnsRecord, CloudflareServiceError> {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/dns_records",
+            self.zone_id
+        );
+
+        let wildcard_name = format!("*.{}", subdomain);
+
+        let request = CreateDnsRecordRequest {
+            record_type: "A".to_string(),
+            name: wildcard_name,
+            content: ip_address.to_string(),
+            ttl: 1, // Auto
+            proxied: false, // Direct connection for Conductor
+        };
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_token))
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await?;
+
+        let cf_response: CloudflareResponse<DnsRecord> = response.json().await?;
+
+        if cf_response.success {
+            cf_response.result.ok_or(CloudflareServiceError::ApiError(
+                "No result in response".to_string(),
+            ))
+        } else {
+            let error_msg = cf_response
+                .errors
+                .first()
+                .map(|e| e.message.clone())
+                .unwrap_or_else(|| "Unknown error".to_string());
+            Err(CloudflareServiceError::ApiError(error_msg))
+        }
+    }
+
+    /// Find a wildcard DNS record by subdomain
+    pub async fn find_wildcard_dns_record(
+        &self,
+        subdomain: &str,
+    ) -> Result<DnsRecord, CloudflareServiceError> {
+        let full_name = if subdomain.starts_with("*.") {
+            if subdomain.ends_with(".spoq.dev") {
+                subdomain.to_string()
+            } else {
+                format!("{}.spoq.dev", subdomain)
+            }
+        } else if subdomain.ends_with(".spoq.dev") {
+            format!("*.{}", subdomain)
+        } else {
+            format!("*.{}.spoq.dev", subdomain)
+        };
+
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/dns_records?type=A&name={}",
+            self.zone_id, full_name
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.api_token))
+            .send()
+            .await?;
+
+        let cf_response: CloudflareResponse<Vec<DnsRecord>> = response.json().await?;
+
+        if cf_response.success {
+            cf_response
+                .result
+                .and_then(|records| records.into_iter().next())
+                .ok_or(CloudflareServiceError::RecordNotFound)
+        } else {
+            let error_msg = cf_response
+                .errors
+                .first()
+                .map(|e| e.message.clone())
+                .unwrap_or_else(|| "Unknown error".to_string());
+            Err(CloudflareServiceError::ApiError(error_msg))
+        }
+    }
+
+    /// Update an existing wildcard DNS record (upsert pattern)
+    pub async fn update_wildcard_dns_record(
+        &self,
+        subdomain: &str,
+        new_ip: &str,
+    ) -> Result<DnsRecord, CloudflareServiceError> {
+        // First try to find existing record
+        match self.find_wildcard_dns_record(subdomain).await {
+            Ok(record) => {
+                // Update existing
+                let url = format!(
+                    "https://api.cloudflare.com/client/v4/zones/{}/dns_records/{}",
+                    self.zone_id, record.id
+                );
+
+                let wildcard_name = format!("*.{}", subdomain);
+
+                let request = CreateDnsRecordRequest {
+                    record_type: "A".to_string(),
+                    name: wildcard_name,
+                    content: new_ip.to_string(),
+                    ttl: 1,
+                    proxied: false,
+                };
+
+                let response = self
+                    .client
+                    .put(&url)
+                    .header("Authorization", format!("Bearer {}", self.api_token))
+                    .header("Content-Type", "application/json")
+                    .json(&request)
+                    .send()
+                    .await?;
+
+                let cf_response: CloudflareResponse<DnsRecord> = response.json().await?;
+
+                if cf_response.success {
+                    cf_response.result.ok_or(CloudflareServiceError::ApiError(
+                        "No result in response".to_string(),
+                    ))
+                } else {
+                    let error_msg = cf_response
+                        .errors
+                        .first()
+                        .map(|e| e.message.clone())
+                        .unwrap_or_else(|| "Unknown error".to_string());
+                    Err(CloudflareServiceError::ApiError(error_msg))
+                }
+            }
+            Err(CloudflareServiceError::RecordNotFound) => {
+                // Create new
+                self.create_wildcard_dns_record(subdomain, new_ip).await
+            }
+            Err(e) => Err(e),
+        }
+    }
 }
