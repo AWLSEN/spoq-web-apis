@@ -123,10 +123,9 @@ pub async fn create_checkout_session(
     };
 
     // Create Stripe Checkout Session
-    // TODO: Use actual client URL from config when available
-    let client_url = "http://localhost:3000"; // Placeholder for client URL
-    let success_url = format!("{}/payment/success?session_id={{CHECKOUT_SESSION_ID}}", client_url);
-    let cancel_url = format!("{}/payment/cancel", client_url);
+    // CLI polls for payment status, these URLs are just for user feedback
+    let success_url = "https://spoq.dev/payment/success?session_id={CHECKOUT_SESSION_ID}".to_string();
+    let cancel_url = "https://spoq.dev/payment/cancel".to_string();
 
     use stripe::{CreateCheckoutSession, CheckoutSessionMode, CreateCheckoutSessionLineItems};
 
@@ -232,4 +231,133 @@ pub async fn get_session_status(
         subscription_id,
         customer_id,
     }))
+}
+
+/// Payment success page - shown after successful Stripe checkout
+///
+/// GET /payment/success
+pub async fn payment_success() -> HttpResponse {
+    HttpResponse::Ok()
+        .content_type("text/html; charset=utf-8")
+        .body(r#"<!DOCTYPE html>
+<html>
+<head>
+    <title>Payment Successful - SPOQ</title>
+    <style>
+        body { font-family: -apple-system, system-ui, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #0a0a0a; color: #fff; }
+        .container { text-align: center; padding: 2rem; }
+        .icon { font-size: 4rem; margin-bottom: 1rem; }
+        h1 { margin: 0 0 1rem; }
+        p { color: #888; margin: 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="icon">✓</div>
+        <h1>Payment Successful</h1>
+        <p>Return to your terminal to continue setup.</p>
+    </div>
+</body>
+</html>"#)
+}
+
+/// Create a Stripe Customer Portal session for subscription management
+///
+/// POST /api/payments/portal
+///
+/// Returns a URL to the Stripe Customer Portal where users can:
+/// - Upgrade/downgrade their plan
+/// - Cancel subscription
+/// - Update payment method
+/// - View invoices
+pub async fn create_portal_session(
+    user: AuthenticatedUser,
+    pool: web::Data<PgPool>,
+    stripe_client: web::Data<StripeClientService>,
+) -> AppResult<HttpResponse> {
+    // Get user's Stripe customer ID
+    let stripe_customer_id: Option<String> = sqlx::query_scalar(
+        "SELECT stripe_customer_id FROM users WHERE id = $1"
+    )
+    .bind(user.user_id)
+    .fetch_optional(pool.get_ref())
+    .await?
+    .flatten();
+
+    let customer_id = stripe_customer_id.ok_or_else(|| {
+        AppError::BadRequest("No subscription found. Please subscribe first.".to_string())
+    })?;
+
+    // Create portal session
+    use stripe::{CreateBillingPortalSession, CustomerId};
+
+    let customer_id_parsed: CustomerId = customer_id.parse()
+        .map_err(|_| AppError::Internal("Invalid customer ID".to_string()))?;
+
+    let mut params = CreateBillingPortalSession::new(customer_id_parsed);
+    params.return_url = Some("https://spoq.dev/portal/return");
+
+    let session = stripe::BillingPortalSession::create(&stripe_client.client(), params)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to create portal session: {}", e)))?;
+
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "portal_url": session.url
+    })))
+}
+
+/// Portal return page - shown after user returns from Stripe portal
+///
+/// GET /portal/return
+pub async fn portal_return() -> HttpResponse {
+    HttpResponse::Ok()
+        .content_type("text/html; charset=utf-8")
+        .body(r#"<!DOCTYPE html>
+<html>
+<head>
+    <title>Subscription Updated - SPOQ</title>
+    <style>
+        body { font-family: -apple-system, system-ui, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #0a0a0a; color: #fff; }
+        .container { text-align: center; padding: 2rem; }
+        .icon { font-size: 4rem; margin-bottom: 1rem; }
+        h1 { margin: 0 0 1rem; }
+        p { color: #888; margin: 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="icon">✓</div>
+        <h1>Subscription Updated</h1>
+        <p>Changes will take effect shortly.</p>
+    </div>
+</body>
+</html>"#)
+}
+
+/// Payment cancelled page - shown when user cancels Stripe checkout
+///
+/// GET /payment/cancel
+pub async fn payment_cancel() -> HttpResponse {
+    HttpResponse::Ok()
+        .content_type("text/html; charset=utf-8")
+        .body(r#"<!DOCTYPE html>
+<html>
+<head>
+    <title>Payment Cancelled - SPOQ</title>
+    <style>
+        body { font-family: -apple-system, system-ui, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #0a0a0a; color: #fff; }
+        .container { text-align: center; padding: 2rem; }
+        .icon { font-size: 4rem; margin-bottom: 1rem; }
+        h1 { margin: 0 0 1rem; }
+        p { color: #888; margin: 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="icon">✕</div>
+        <h1>Payment Cancelled</h1>
+        <p>Return to your terminal to try again.</p>
+    </div>
+</body>
+</html>"#)
 }

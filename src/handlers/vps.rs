@@ -93,6 +93,65 @@ pub async fn list_plans(hostinger: web::Data<HostingerClient>) -> AppResult<Http
     Ok(HttpResponse::Ok().json(VpsPlansResponse { plans }))
 }
 
+/// List available subscription plans with Stripe pricing
+///
+/// GET /api/vps/subscription-plans
+///
+/// Returns pre-defined subscription plans with Stripe price IDs for checkout.
+/// These are the user-facing plans, separate from Hostinger infrastructure pricing.
+pub async fn list_subscription_plans() -> AppResult<HttpResponse> {
+    // Pre-defined subscription plans with Stripe price IDs
+    // Pricing: Hostinger cost + ~$1-5 markup for adoption-first strategy
+    let plans = vec![
+        VpsPlan {
+            id: "price_1St78kL9gUL3LpD6nAuyfmeU".to_string(),
+            name: "Starter".to_string(),
+            vcpu: 1,
+            ram_gb: 4,
+            disk_gb: 50,
+            bandwidth_tb: 4,
+            monthly_price_cents: 1500, // $15/month (Hostinger: $13.99)
+            first_month_price_cents: 1500,
+            stripe_price_id: Some("price_1St78kL9gUL3LpD6nAuyfmeU".to_string()),
+        },
+        VpsPlan {
+            id: "price_1St78vL9gUL3LpD6wTPq8MPE".to_string(),
+            name: "Basic".to_string(),
+            vcpu: 2,
+            ram_gb: 8,
+            disk_gb: 100,
+            bandwidth_tb: 4,
+            monthly_price_cents: 1900, // $19/month (Hostinger: $17.99)
+            first_month_price_cents: 1900,
+            stripe_price_id: Some("price_1St78vL9gUL3LpD6wTPq8MPE".to_string()),
+        },
+        VpsPlan {
+            id: "price_1St78XL9gUL3LpD6kLWknLOu".to_string(),
+            name: "Pro".to_string(),
+            vcpu: 4,
+            ram_gb: 16,
+            disk_gb: 200,
+            bandwidth_tb: 8,
+            monthly_price_cents: 3200, // $32/month (Hostinger: $29.99)
+            first_month_price_cents: 3200,
+            stripe_price_id: Some("price_1St78XL9gUL3LpD6kLWknLOu".to_string()),
+        },
+        VpsPlan {
+            id: "price_1St78aL9gUL3LpD69Zc3Cvub".to_string(),
+            name: "Enterprise".to_string(),
+            vcpu: 8,
+            ram_gb: 32,
+            disk_gb: 400,
+            bandwidth_tb: 16,
+            monthly_price_cents: 6500, // $65/month (Hostinger: $59.99)
+            first_month_price_cents: 6500,
+            stripe_price_id: Some("price_1St78aL9gUL3LpD69Zc3Cvub".to_string()),
+        },
+    ];
+
+    Ok(HttpResponse::Ok().json(VpsPlansResponse { plans }))
+}
+
 /// List available data centers
 ///
 /// GET /api/vps/datacenters

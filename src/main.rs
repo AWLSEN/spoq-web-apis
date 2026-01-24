@@ -14,12 +14,13 @@ use spoq_web_apis::handlers::{
     device_authorize, device_init, device_token, device_verify, github_callback, github_redirect,
     health_check, refresh_token, revoke_token,
     // VPS handlers
-    get_vps_precheck, get_vps_status, list_datacenters, list_plans, provision_vps, reset_password,
-    restart_vps, start_vps, stop_vps,
+    get_vps_precheck, get_vps_status, list_datacenters, list_plans, list_subscription_plans,
+    provision_vps, reset_password, restart_vps, start_vps, stop_vps,
     // BYOVPS handlers
     provision_byovps,
     // Payment handlers
-    create_checkout_session, get_session_status,
+    create_checkout_session, create_portal_session, get_session_status, payment_cancel,
+    payment_success, portal_return,
     // Admin handlers (TEMPORARY - NO AUTH)
     cleanup_all_vps, cleanup_user_vps, list_all_vps,
     // Webhook handlers
@@ -156,9 +157,10 @@ async fn main() -> std::io::Result<()> {
 
             // Add payment routes if Stripe is configured
             app = app.service(
-                web::scope("/api/payment")
+                web::scope("/api/payments")
                     .route("/create-checkout-session", web::post().to(create_checkout_session))
-                    .route("/session-status/{session_id}", web::get().to(get_session_status)),
+                    .route("/status/{session_id}", web::get().to(get_session_status))
+                    .route("/portal", web::post().to(create_portal_session)),
             );
 
             // Add webhook routes if Stripe is configured
@@ -186,6 +188,15 @@ async fn main() -> std::io::Result<()> {
         // VPS precheck endpoint (available without Hostinger - just DB query)
         // This endpoint is used by the CLI for Step 1: PRE-CHECK
         app = app.route("/api/vps/precheck", web::get().to(get_vps_precheck));
+
+        // Subscription plans endpoint (available without Hostinger - uses Stripe price IDs)
+        app = app.route("/api/vps/subscription-plans", web::get().to(list_subscription_plans));
+
+        // Payment result pages (static HTML, no auth required)
+        app = app
+            .route("/payment/success", web::get().to(payment_success))
+            .route("/payment/cancel", web::get().to(payment_cancel))
+            .route("/portal/return", web::get().to(portal_return));
 
         // Add VPS routes if Hostinger is configured
         if let Some(ref hostinger) = hostinger_client {
