@@ -302,3 +302,31 @@ impl VpsPrecheckResponse {
         }
     }
 }
+
+/// Response for VPS provision endpoint when VPS creation is initiated
+///
+/// This response is returned when provisioning starts successfully.
+/// The CLI uses this data for health polling and later confirmation.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProvisionPendingResponse {
+    /// VPS hostname (e.g., "spoq-abcd1234.example.com")
+    pub hostname: String,
+    /// IP address if immediately available, otherwise None
+    pub ip_address: Option<String>,
+    /// Provider-specific instance ID
+    pub provider_instance_id: i64,
+    /// Provider-specific order ID if applicable
+    pub provider_order_id: Option<String>,
+    /// Plan ID (e.g., "vps-1")
+    pub plan_id: i64,
+    /// Template ID used for provisioning
+    pub template_id: i64,
+    /// Data center ID where VPS is provisioned
+    pub data_center_id: i64,
+    /// JWT secret for conductor authentication
+    pub jwt_secret: String,
+    /// SSH password for server access (plaintext)
+    pub ssh_password: String,
+    /// Status message for the user
+    pub message: String,
+}
