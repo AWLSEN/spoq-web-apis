@@ -52,16 +52,22 @@ pub struct SuccessResponse {
 
 /// Request to confirm VPS provisioning and create database record
 ///
-/// This endpoint is called by the CLI after Hostinger provisioning completes.
-/// It creates the VPS record in the database with status='ready'.
+/// This endpoint is called by the CLI after Hostinger provisioning completes,
+/// or after BYOVPS setup completes. It creates the VPS record in the database
+/// with status='ready'.
 #[derive(Debug, Deserialize)]
 pub struct ConfirmVpsRequest {
     /// VPS hostname (e.g., "username.spoq.dev")
     pub hostname: String,
     /// IPv4 address of the VPS
     pub ip_address: String,
-    /// Hostinger VM ID
-    pub provider_instance_id: i64,
+    /// Provider type: "hostinger" (default) or "byovps"
+    /// If not provided, defaults to "hostinger" for backwards compatibility
+    #[serde(default = "default_provider")]
+    pub provider: String,
+    /// Hostinger VM ID (optional for BYOVPS, uses 0)
+    /// For backwards compatibility, accepts either i64 or null
+    pub provider_instance_id: Option<i64>,
     /// Hostinger order/subscription ID (optional)
     pub provider_order_id: Option<String>,
     /// Hostinger plan ID (e.g., "hostingercom-vps-kvm1-usd-1m")
@@ -74,6 +80,11 @@ pub struct ConfirmVpsRequest {
     pub jwt_secret: String,
     /// SSH password (plaintext - will be hashed before storage)
     pub ssh_password: String,
+}
+
+/// Default provider value for backwards compatibility
+fn default_provider() -> String {
+    "hostinger".to_string()
 }
 
 /// Response for VPS confirmation
@@ -207,9 +218,9 @@ pub async fn list_datacenters(hostinger: web::Data<HostingerClient>) -> AppResul
 
 /// Confirm VPS provisioning and create database record
 ///
-/// This endpoint is called by the CLI after Hostinger provisioning completes.
-/// It creates the VPS record in the database with status='ready'.
-/// This is the ONLY place where user_vps records are created.
+/// This endpoint is called by the CLI after Hostinger provisioning completes,
+/// or after BYOVPS setup completes. It creates the VPS record in the database
+/// with status='ready'. This is the ONLY place where user_vps records are created.
 ///
 /// POST /api/vps/confirm
 pub async fn confirm_vps(
@@ -224,12 +235,35 @@ pub async fn confirm_vps(
         ));
     }
 
-    // Validate hostname format
-    if !req.hostname.ends_with(".spoq.dev") {
+    // Validate provider field
+    let provider = req.provider.to_lowercase();
+    let is_byovps = provider == "byovps";
+
+    if provider != "hostinger" && provider != "byovps" {
         return Err(AppError::BadRequest(
-            "Hostname must end with .spoq.dev".to_string(),
+            format!("Invalid provider '{}'. Must be 'hostinger' or 'byovps'", req.provider),
         ));
     }
+
+    // Validate hostname format (only for Hostinger - BYOVPS can have any hostname)
+    if !is_byovps && !req.hostname.ends_with(".spoq.dev") {
+        return Err(AppError::BadRequest(
+            "Hostname must end with .spoq.dev for Hostinger VPS".to_string(),
+        ));
+    }
+
+    // For Hostinger, provider_instance_id is required (for backwards compatibility, also accept it directly)
+    // For BYOVPS, we use 0 as a placeholder
+    let provider_instance_id = if is_byovps {
+        0i64
+    } else {
+        req.provider_instance_id.ok_or_else(|| {
+            AppError::BadRequest("provider_instance_id is required for Hostinger VPS".to_string())
+        })?
+    };
+
+    // Set device_type based on provider
+    let device_type = if is_byovps { "byovps" } else { "vps" };
 
     // Check if user already has a VPS (excluding terminated/failed)
     let existing: Option<UserVps> = sqlx::query_as(
@@ -279,18 +313,19 @@ pub async fn confirm_vps(
             id, user_id, provider, provider_instance_id, provider_order_id,
             plan_id, template_id, data_center_id, hostname, ip_address,
             status, ssh_username, ssh_password_hash, jwt_secret,
-            ready_at, conductor_verified_at
+            device_type, ready_at, conductor_verified_at
         ) VALUES (
-            $1, $2, 'hostinger', $3, $4,
-            $5, $6, $7, $8, $9,
-            'ready', 'root', $10, $11,
-            NOW(), NOW()
+            $1, $2, $3, $4, $5,
+            $6, $7, $8, $9, $10,
+            'ready', 'root', $11, $12,
+            $13, NOW(), NOW()
         )
         "#,
     )
     .bind(vps_id)
     .bind(user.user_id)
-    .bind(req.provider_instance_id)
+    .bind(&provider)
+    .bind(provider_instance_id)
     .bind(&req.provider_order_id)
     .bind(&req.plan_id)
     .bind(req.template_id)
@@ -299,12 +334,13 @@ pub async fn confirm_vps(
     .bind(&req.ip_address)
     .bind(&ssh_password_hash)
     .bind(&req.jwt_secret)
+    .bind(device_type)
     .execute(pool.get_ref())
     .await?;
 
     tracing::info!(
-        "VPS confirmed: id={}, hostname={}, ip={}, provider_id={}",
-        vps_id, req.hostname, req.ip_address, req.provider_instance_id
+        "VPS confirmed: id={}, hostname={}, ip={}, provider={}, device_type={}",
+        vps_id, req.hostname, req.ip_address, provider, device_type
     );
 
     Ok(HttpResponse::Created().json(ConfirmVpsResponse {

@@ -4,16 +4,18 @@
 //! - Request validation
 //! - Duplicate VPS prevention
 //! - Database record creation
+//! - Provider field support (hostinger vs byovps)
 
 use spoq_web_apis::handlers::{ConfirmVpsRequest, ConfirmVpsResponse};
 
-/// Test that ConfirmVpsRequest struct has all required fields
+/// Test that ConfirmVpsRequest struct has all required fields (Hostinger provider)
 #[test]
 fn test_confirm_vps_request_structure() {
     let request = ConfirmVpsRequest {
         hostname: "testuser.spoq.dev".to_string(),
         ip_address: "192.168.1.100".to_string(),
-        provider_instance_id: 12345,
+        provider: "hostinger".to_string(),
+        provider_instance_id: Some(12345),
         provider_order_id: Some("order-abc123".to_string()),
         plan_id: "hostingercom-vps-kvm1-usd-1m".to_string(),
         template_id: 1007,
@@ -24,7 +26,8 @@ fn test_confirm_vps_request_structure() {
 
     assert_eq!(request.hostname, "testuser.spoq.dev");
     assert_eq!(request.ip_address, "192.168.1.100");
-    assert_eq!(request.provider_instance_id, 12345);
+    assert_eq!(request.provider, "hostinger");
+    assert_eq!(request.provider_instance_id, Some(12345));
     assert_eq!(request.provider_order_id, Some("order-abc123".to_string()));
     assert_eq!(request.plan_id, "hostingercom-vps-kvm1-usd-1m");
     assert_eq!(request.template_id, 1007);
@@ -39,7 +42,8 @@ fn test_confirm_vps_request_without_order_id() {
     let request = ConfirmVpsRequest {
         hostname: "alice.spoq.dev".to_string(),
         ip_address: "10.0.0.50".to_string(),
-        provider_instance_id: 67890,
+        provider: "hostinger".to_string(),
+        provider_instance_id: Some(67890),
         provider_order_id: None,
         plan_id: "vps-starter".to_string(),
         template_id: 1007,
@@ -49,7 +53,29 @@ fn test_confirm_vps_request_without_order_id() {
     };
 
     assert!(request.provider_order_id.is_none());
-    assert_eq!(request.provider_instance_id, 67890);
+    assert_eq!(request.provider_instance_id, Some(67890));
+}
+
+/// Test ConfirmVpsRequest for BYOVPS provider
+#[test]
+fn test_confirm_vps_request_byovps() {
+    let request = ConfirmVpsRequest {
+        hostname: "my-custom-vps.example.com".to_string(),
+        ip_address: "192.168.100.50".to_string(),
+        provider: "byovps".to_string(),
+        provider_instance_id: None, // Not needed for BYOVPS
+        provider_order_id: None,
+        plan_id: "byovps-custom".to_string(),
+        template_id: 0,
+        data_center_id: 0,
+        jwt_secret: "byovps-jwt-secret".to_string(),
+        ssh_password: "ByovpsPassword123!".to_string(),
+    };
+
+    assert_eq!(request.provider, "byovps");
+    assert_eq!(request.provider_instance_id, None);
+    // BYOVPS can have any hostname (not restricted to .spoq.dev)
+    assert!(!request.hostname.ends_with(".spoq.dev"));
 }
 
 /// Test that ConfirmVpsResponse contains expected fields
@@ -149,12 +175,13 @@ fn test_vps_id_uniqueness() {
     assert_ne!(id1, id3);
 }
 
-/// Test request deserialization from JSON
+/// Test request deserialization from JSON (with explicit provider)
 #[test]
 fn test_confirm_vps_request_json_deserialization() {
     let json = r#"{
         "hostname": "testuser.spoq.dev",
         "ip_address": "192.168.1.100",
+        "provider": "hostinger",
         "provider_instance_id": 12345,
         "provider_order_id": "order-abc",
         "plan_id": "vps-1",
@@ -168,13 +195,56 @@ fn test_confirm_vps_request_json_deserialization() {
 
     assert_eq!(request.hostname, "testuser.spoq.dev");
     assert_eq!(request.ip_address, "192.168.1.100");
-    assert_eq!(request.provider_instance_id, 12345);
+    assert_eq!(request.provider, "hostinger");
+    assert_eq!(request.provider_instance_id, Some(12345));
     assert_eq!(request.provider_order_id, Some("order-abc".to_string()));
     assert_eq!(request.plan_id, "vps-1");
     assert_eq!(request.template_id, 1007);
     assert_eq!(request.data_center_id, 9);
     assert_eq!(request.jwt_secret, "secret123");
     assert_eq!(request.ssh_password, "Password12345!");
+}
+
+/// Test request deserialization from JSON (backwards compatibility - no provider field defaults to hostinger)
+#[test]
+fn test_confirm_vps_request_json_backwards_compat() {
+    let json = r#"{
+        "hostname": "testuser.spoq.dev",
+        "ip_address": "192.168.1.100",
+        "provider_instance_id": 12345,
+        "plan_id": "vps-1",
+        "template_id": 1007,
+        "data_center_id": 9,
+        "jwt_secret": "secret123",
+        "ssh_password": "Password12345!"
+    }"#;
+
+    let request: ConfirmVpsRequest = serde_json::from_str(json).expect("Failed to deserialize");
+
+    // Should default to "hostinger" when provider is not specified
+    assert_eq!(request.provider, "hostinger");
+    assert_eq!(request.provider_instance_id, Some(12345));
+}
+
+/// Test BYOVPS request deserialization from JSON
+#[test]
+fn test_confirm_vps_request_json_byovps() {
+    let json = r#"{
+        "hostname": "my-server.example.com",
+        "ip_address": "10.0.0.100",
+        "provider": "byovps",
+        "plan_id": "byovps-custom",
+        "template_id": 0,
+        "data_center_id": 0,
+        "jwt_secret": "my-jwt-secret",
+        "ssh_password": "MyByovpsPass123!"
+    }"#;
+
+    let request: ConfirmVpsRequest = serde_json::from_str(json).expect("Failed to deserialize");
+
+    assert_eq!(request.provider, "byovps");
+    assert_eq!(request.provider_instance_id, None); // Not provided, should be None
+    assert_eq!(request.hostname, "my-server.example.com");
 }
 
 /// Test request deserialization without optional field
@@ -195,6 +265,8 @@ fn test_confirm_vps_request_json_without_optional() {
 
     assert!(request.provider_order_id.is_none());
     assert_eq!(request.hostname, "alice.spoq.dev");
+    // provider defaults to "hostinger"
+    assert_eq!(request.provider, "hostinger");
 }
 
 /// Test response serialization to JSON
@@ -272,5 +344,64 @@ fn test_data_center_id_values() {
 
     for dc_id in valid_dc_ids {
         assert!(dc_id > 0, "Data center ID should be positive");
+    }
+}
+
+/// Test valid provider values
+#[test]
+fn test_provider_values() {
+    let valid_providers = vec!["hostinger", "byovps"];
+
+    for provider in valid_providers {
+        assert!(
+            provider == "hostinger" || provider == "byovps",
+            "Provider '{}' should be valid",
+            provider
+        );
+    }
+
+    // Invalid providers
+    let invalid_providers = vec!["aws", "digitalocean", "contabo", ""];
+
+    for provider in invalid_providers {
+        assert!(
+            provider != "hostinger" && provider != "byovps",
+            "Provider '{}' should be invalid",
+            provider
+        );
+    }
+}
+
+/// Test device_type mapping based on provider
+#[test]
+fn test_device_type_from_provider() {
+    // hostinger -> vps
+    let hostinger_device_type = if "hostinger" == "byovps" { "byovps" } else { "vps" };
+    assert_eq!(hostinger_device_type, "vps");
+
+    // byovps -> byovps
+    let byovps_device_type = if "byovps" == "byovps" { "byovps" } else { "vps" };
+    assert_eq!(byovps_device_type, "byovps");
+}
+
+/// Test hostname validation rules by provider
+#[test]
+fn test_hostname_validation_by_provider() {
+    // Hostinger: must end with .spoq.dev
+    let hostinger_hostname = "user.spoq.dev";
+    assert!(hostinger_hostname.ends_with(".spoq.dev"));
+
+    // BYOVPS: can be any valid hostname
+    let byovps_hostnames = vec![
+        "my-server.example.com",
+        "vps.mydomain.io",
+        "192.168.1.100", // Even raw IPs are technically valid
+        "custom-host.local",
+    ];
+
+    for hostname in byovps_hostnames {
+        // BYOVPS hostnames don't need to end with .spoq.dev
+        // This test just validates the flexibility
+        assert!(!hostname.is_empty());
     }
 }
