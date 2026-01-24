@@ -25,7 +25,8 @@ use crate::config::Config;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthenticatedUser;
 use crate::models::{
-    ProvisionVpsRequest, UserVps, VpsDataCenter, VpsPlan, VpsPrecheckResponse, VpsStatusResponse,
+    ProvisionPendingResponse, ProvisionVpsRequest, UserVps, VpsDataCenter, VpsPlan,
+    VpsPrecheckResponse, VpsStatusResponse,
 };
 use crate::services::cloudflare::CloudflareService;
 use crate::services::hostinger::{generate_post_install_script, CreateVpsRequest, HostingerClient, VpsSetup};
@@ -330,6 +331,10 @@ pub async fn confirm_vps(
 
 /// Provision a new VPS for the authenticated user
 ///
+/// This endpoint initiates VPS provisioning via Hostinger API.
+/// It does NOT create a database record - that happens when the CLI
+/// calls `/api/vps/confirm` after health check passes.
+///
 /// POST /api/vps/provision
 pub async fn provision_vps(
     user: AuthenticatedUser,
@@ -354,7 +359,7 @@ pub async fn provision_vps(
     .fetch_optional(pool.get_ref())
     .await?;
 
-    let (user_subscription_id, user_subscription_status) = user_subscription
+    let (_user_subscription_id, user_subscription_status) = user_subscription
         .ok_or_else(|| AppError::Internal("User not found".to_string()))?;
 
     // Verify active subscription for managed VPS
@@ -365,7 +370,7 @@ pub async fn provision_vps(
         ));
     }
 
-    // Check if user already has a VPS
+    // Check if user already has a VPS (in DB)
     let existing: Option<UserVps> = sqlx::query_as(
         "SELECT * FROM user_vps WHERE user_id = $1 AND status NOT IN ('terminated', 'failed')",
     )
@@ -410,58 +415,28 @@ pub async fn provision_vps(
     // Generate hostname
     let hostname = format!("{}.spoq.dev", username.to_lowercase());
 
-    // Hash the SSH password
-    let salt = SaltString::generate(&mut OsRng);
-    let argon2 = Argon2::default();
-    let ssh_password_hash = argon2
-        .hash_password(req.ssh_password.as_bytes(), &salt)
-        .map_err(|e| AppError::Internal(format!("Failed to hash password: {}", e)))?
-        .to_string();
-
     // Get plan and datacenter settings
     let plan_id = req.plan_id.clone().unwrap_or_else(|| config.default_vps_plan.clone());
     let data_center_id = req.data_center_id.unwrap_or(config.default_vps_datacenter);
     let template_id = config.default_vps_template;
 
-    // Create VPS record in pending state
-    let vps_id = Uuid::new_v4();
+    // Generate a unique ID for the post-install script name
+    let script_uuid = Uuid::new_v4();
     let jwt_secret = config.jwt_secret.clone();
-
-    sqlx::query(
-        r#"
-        INSERT INTO user_vps (
-            id, user_id, provider, plan_id, template_id, data_center_id,
-            hostname, status, ssh_username, ssh_password_hash, jwt_secret,
-            requires_subscription, subscription_id
-        ) VALUES ($1, $2, 'hostinger', $3, $4, $5, $6, 'pending', 'root', $7, $8, $9, $10)
-        "#,
-    )
-    .bind(vps_id)
-    .bind(user.user_id)
-    .bind(&plan_id)
-    .bind(template_id)
-    .bind(data_center_id)
-    .bind(&hostname)
-    .bind(&ssh_password_hash)
-    .bind(&jwt_secret)
-    .bind(true) // requires_subscription = true for managed VPS
-    .bind(&user_subscription_id) // subscription_id from user record
-    .execute(pool.get_ref())
-    .await?;
 
     // Generate post-install script (config written directly, no registration needed)
     let script_content = generate_post_install_script(
         &req.ssh_password,
         &hostname,
         "https://download.spoq.dev/conductor",
-        &config.jwt_secret,
+        &jwt_secret,
         &user.user_id.to_string(),
     );
 
     // Create post-install script on Hostinger
     let script = hostinger
         .create_post_install_script(
-            &format!("spoq-setup-{}", vps_id),
+            &format!("spoq-setup-{}", script_uuid),
             &script_content,
         )
         .await
@@ -471,12 +446,6 @@ pub async fn provision_vps(
         })?;
 
     let script_id = script.id;
-
-    // Update status to provisioning
-    sqlx::query("UPDATE user_vps SET status = 'provisioning' WHERE id = $1")
-        .bind(vps_id)
-        .execute(pool.get_ref())
-        .await?;
 
     // Create VPS via Hostinger API
     let create_req = CreateVpsRequest {
@@ -506,35 +475,34 @@ pub async fn provision_vps(
             });
 
             // Extract VM info from nested response
+            // Note: VirtualMachineInfo from CreateVpsResponse doesn't include IP address yet
+            // The CLI will need to poll for IP address separately
             let (provider_instance_id, provider_order_id) = if let Some(vm) = response.virtual_machine {
-                (Some(vm.id), vm.subscription_id)
+                (vm.id, vm.subscription_id)
             } else {
-                (None, None)
+                return Err(AppError::Internal(
+                    "Hostinger API returned success but no virtual machine data".to_string(),
+                ));
             };
 
-            sqlx::query(
-                r#"
-                UPDATE user_vps
-                SET provider_instance_id = $1, provider_order_id = $2, status = 'provisioning'
-                WHERE id = $3
-                "#,
-            )
-            .bind(provider_instance_id)
-            .bind(&provider_order_id)
-            .bind(vps_id)
-            .execute(pool.get_ref())
-            .await?;
-
             tracing::info!(
-                "VPS provisioning started: id={}, hostname={}, provider_id={:?}",
-                vps_id, hostname, provider_instance_id
+                "VPS provisioning started: hostname={}, provider_id={}",
+                hostname, provider_instance_id
             );
 
-            Ok(HttpResponse::Accepted().json(ProvisionResponse {
-                id: vps_id,
+            // Return pending response with all data CLI needs for health polling and confirmation
+            // Note: ip_address is None initially - CLI will get it from health check polling
+            Ok(HttpResponse::Accepted().json(ProvisionPendingResponse {
                 hostname,
-                status: "provisioning".to_string(),
-                message: "VPS provisioning started. Check status for updates.".to_string(),
+                ip_address: None, // Not available yet from CreateVpsResponse
+                provider_instance_id,
+                provider_order_id,
+                plan_id,
+                template_id,
+                data_center_id,
+                jwt_secret,
+                ssh_password: req.ssh_password.clone(),
+                message: "VPS provisioning started. Poll health endpoint until ready, then call /api/vps/confirm.".to_string(),
             }))
         }
         Err(e) => {
@@ -542,12 +510,6 @@ pub async fn provision_vps(
             if let Err(del_err) = hostinger.delete_post_install_script(script_id).await {
                 tracing::warn!("Failed to delete post-install script {} after VPS creation failure: {}", script_id, del_err);
             }
-
-            // Mark as failed
-            sqlx::query("UPDATE user_vps SET status = 'failed' WHERE id = $1")
-                .bind(vps_id)
-                .execute(pool.get_ref())
-                .await?;
 
             tracing::error!("Failed to provision VPS: {}", e);
             Err(AppError::Internal(format!(

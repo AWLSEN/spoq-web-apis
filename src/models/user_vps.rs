@@ -309,20 +309,20 @@ impl VpsPrecheckResponse {
 /// The CLI uses this data for health polling and later confirmation.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProvisionPendingResponse {
-    /// VPS hostname (e.g., "spoq-abcd1234.example.com")
+    /// VPS hostname (e.g., "username.spoq.dev")
     pub hostname: String,
     /// IP address if immediately available, otherwise None
     pub ip_address: Option<String>,
-    /// Provider-specific instance ID
+    /// Provider-specific instance ID (Hostinger VM ID)
     pub provider_instance_id: i64,
-    /// Provider-specific order ID if applicable
+    /// Provider-specific order ID if applicable (Hostinger subscription ID)
     pub provider_order_id: Option<String>,
-    /// Plan ID (e.g., "vps-1")
-    pub plan_id: i64,
-    /// Template ID used for provisioning
-    pub template_id: i64,
-    /// Data center ID where VPS is provisioned
-    pub data_center_id: i64,
+    /// Plan ID (e.g., "hostingercom-vps-kvm1-usd-1m")
+    pub plan_id: String,
+    /// Template ID used for provisioning (e.g., 1007 for Ubuntu 22.04)
+    pub template_id: i32,
+    /// Data center ID where VPS is provisioned (e.g., 9 for Phoenix)
+    pub data_center_id: i32,
     /// JWT secret for conductor authentication
     pub jwt_secret: String,
     /// SSH password for server access (plaintext)
