@@ -27,8 +27,8 @@ pub use health::{health_check, HealthResponse};
 pub use vps::{
     confirm_vps, get_vps_precheck, get_vps_status, list_datacenters, list_plans,
     list_subscription_plans, provision_vps, reset_password, restart_vps, start_vps, stop_vps,
-    ConfirmVpsRequest, ConfirmVpsResponse, DataCentersResponse, ProvisionResponse,
-    ResetPasswordRequest, SuccessResponse, VpsPlansResponse,
+    ConfirmVpsRequest, ConfirmVpsResponse, DataCentersResponse, ResetPasswordRequest,
+    SuccessResponse, VpsPlansResponse,
 };
 pub use byovps::{provision_byovps, ProvisionByovpsRequest, ProvisionByovpsResponse};
 pub use admin::{cleanup_all_vps, cleanup_user_vps, list_all_vps};

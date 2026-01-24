@@ -43,15 +43,6 @@ pub struct DataCentersResponse {
     pub data_centers: Vec<VpsDataCenter>,
 }
 
-/// Response for VPS provisioning
-#[derive(Debug, Serialize)]
-pub struct ProvisionResponse {
-    pub id: Uuid,
-    pub hostname: String,
-    pub status: String,
-    pub message: String,
-}
-
 /// Generic success response
 #[derive(Debug, Serialize)]
 pub struct SuccessResponse {
