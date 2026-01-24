@@ -4,6 +4,7 @@
 //! - `GET /api/vps/plans` - List available VPS plans
 //! - `GET /api/vps/datacenters` - List available data centers
 //! - `POST /api/vps/provision` - Provision a new VPS for the user
+//! - `POST /api/vps/confirm` - Confirm VPS provisioning and create database record
 //! - `GET /api/vps/status` - Get VPS status for the authenticated user
 //! - `POST /api/vps/start` - Start user's VPS
 //! - `POST /api/vps/stop` - Stop user's VPS
@@ -15,7 +16,7 @@ use argon2::{
     Argon2,
 };
 use reqwest::Client;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::time::Duration;
 use uuid::Uuid;
@@ -54,6 +55,42 @@ pub struct ProvisionResponse {
 #[derive(Debug, Serialize)]
 pub struct SuccessResponse {
     pub success: bool,
+    pub message: String,
+}
+
+/// Request to confirm VPS provisioning and create database record
+///
+/// This endpoint is called by the CLI after Hostinger provisioning completes.
+/// It creates the VPS record in the database with status='ready'.
+#[derive(Debug, Deserialize)]
+pub struct ConfirmVpsRequest {
+    /// VPS hostname (e.g., "username.spoq.dev")
+    pub hostname: String,
+    /// IPv4 address of the VPS
+    pub ip_address: String,
+    /// Hostinger VM ID
+    pub provider_instance_id: i64,
+    /// Hostinger order/subscription ID (optional)
+    pub provider_order_id: Option<String>,
+    /// Hostinger plan ID (e.g., "hostingercom-vps-kvm1-usd-1m")
+    pub plan_id: String,
+    /// OS template ID (e.g., 1007 for Ubuntu 22.04)
+    pub template_id: i32,
+    /// Data center ID (e.g., 9 for Phoenix)
+    pub data_center_id: i32,
+    /// JWT secret for conductor authentication
+    pub jwt_secret: String,
+    /// SSH password (plaintext - will be hashed before storage)
+    pub ssh_password: String,
+}
+
+/// Response for VPS confirmation
+#[derive(Debug, Serialize)]
+pub struct ConfirmVpsResponse {
+    pub id: Uuid,
+    pub hostname: String,
+    pub status: String,
+    pub ip_address: String,
     pub message: String,
 }
 
@@ -170,6 +207,121 @@ pub async fn list_datacenters(hostinger: web::Data<HostingerClient>) -> AppResul
         .collect();
 
     Ok(HttpResponse::Ok().json(DataCentersResponse { data_centers }))
+}
+
+// ---------------------------------------------------------------------------
+// VPS confirmation (authenticated) - Creates DB record after provisioning
+// ---------------------------------------------------------------------------
+
+/// Confirm VPS provisioning and create database record
+///
+/// This endpoint is called by the CLI after Hostinger provisioning completes.
+/// It creates the VPS record in the database with status='ready'.
+/// This is the ONLY place where user_vps records are created.
+///
+/// POST /api/vps/confirm
+pub async fn confirm_vps(
+    user: AuthenticatedUser,
+    pool: web::Data<PgPool>,
+    req: web::Json<ConfirmVpsRequest>,
+) -> AppResult<HttpResponse> {
+    // Validate SSH password length
+    if req.ssh_password.len() < 12 {
+        return Err(AppError::BadRequest(
+            "SSH password must be at least 12 characters".to_string(),
+        ));
+    }
+
+    // Validate hostname format
+    if !req.hostname.ends_with(".spoq.dev") {
+        return Err(AppError::BadRequest(
+            "Hostname must end with .spoq.dev".to_string(),
+        ));
+    }
+
+    // Check if user already has a VPS (excluding terminated/failed)
+    let existing: Option<UserVps> = sqlx::query_as(
+        "SELECT * FROM user_vps WHERE user_id = $1 AND status NOT IN ('terminated', 'failed')",
+    )
+    .bind(user.user_id)
+    .fetch_optional(pool.get_ref())
+    .await?;
+
+    if let Some(vps) = existing {
+        return Err(AppError::Conflict(format!(
+            "User already has an active VPS: {} (status: {})",
+            vps.hostname, vps.status
+        )));
+    }
+
+    // Clean up any stale failed or terminated VPS records for this user
+    let deleted = sqlx::query(
+        "DELETE FROM user_vps WHERE user_id = $1 AND status IN ('failed', 'terminated')",
+    )
+    .bind(user.user_id)
+    .execute(pool.get_ref())
+    .await?;
+
+    if deleted.rows_affected() > 0 {
+        tracing::info!(
+            "Cleaned up {} stale VPS record(s) for user {}",
+            deleted.rows_affected(),
+            user.user_id
+        );
+    }
+
+    // Hash the SSH password
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+    let ssh_password_hash = argon2
+        .hash_password(req.ssh_password.as_bytes(), &salt)
+        .map_err(|e| AppError::Internal(format!("Failed to hash password: {}", e)))?
+        .to_string();
+
+    // Create VPS record with status='ready'
+    let vps_id = Uuid::new_v4();
+
+    sqlx::query(
+        r#"
+        INSERT INTO user_vps (
+            id, user_id, provider, provider_instance_id, provider_order_id,
+            plan_id, template_id, data_center_id, hostname, ip_address,
+            status, ssh_username, ssh_password_hash, jwt_secret,
+            ready_at, conductor_verified_at
+        ) VALUES (
+            $1, $2, 'hostinger', $3, $4,
+            $5, $6, $7, $8, $9,
+            'ready', 'root', $10, $11,
+            NOW(), NOW()
+        )
+        "#,
+    )
+    .bind(vps_id)
+    .bind(user.user_id)
+    .bind(req.provider_instance_id)
+    .bind(&req.provider_order_id)
+    .bind(&req.plan_id)
+    .bind(req.template_id)
+    .bind(req.data_center_id)
+    .bind(&req.hostname)
+    .bind(&req.ip_address)
+    .bind(&ssh_password_hash)
+    .bind(&req.jwt_secret)
+    .execute(pool.get_ref())
+    .await?;
+
+    tracing::info!(
+        "VPS confirmed: id={}, hostname={}, ip={}, provider_id={}",
+        vps_id, req.hostname, req.ip_address, req.provider_instance_id
+    );
+
+    Ok(HttpResponse::Created().json(ConfirmVpsResponse {
+        id: vps_id,
+        hostname: req.hostname.clone(),
+        status: "ready".to_string(),
+        ip_address: req.ip_address.clone(),
+        message: "VPS record created successfully".to_string(),
+    }))
 }
 
 // ---------------------------------------------------------------------------

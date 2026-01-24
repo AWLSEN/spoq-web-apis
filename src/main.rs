@@ -14,8 +14,8 @@ use spoq_web_apis::handlers::{
     device_authorize, device_init, device_token, device_verify, github_callback, github_redirect,
     health_check, refresh_token, revoke_token,
     // VPS handlers
-    get_vps_precheck, get_vps_status, list_datacenters, list_plans, list_subscription_plans,
-    provision_vps, reset_password, restart_vps, start_vps, stop_vps,
+    confirm_vps, get_vps_precheck, get_vps_status, list_datacenters, list_plans,
+    list_subscription_plans, provision_vps, reset_password, restart_vps, start_vps, stop_vps,
     // BYOVPS handlers
     provision_byovps,
     // Payment handlers
@@ -180,6 +180,10 @@ async fn main() -> std::io::Result<()> {
         // VPS precheck endpoint (available without Hostinger - just DB query)
         // This endpoint is used by the CLI for Step 1: PRE-CHECK
         app = app.route("/api/vps/precheck", web::get().to(get_vps_precheck));
+
+        // VPS confirm endpoint (available without Hostinger - just DB write)
+        // This endpoint is called by CLI after Hostinger provisioning completes
+        app = app.route("/api/vps/confirm", web::post().to(confirm_vps));
 
         // Subscription plans endpoint (available without Hostinger - uses Stripe price IDs)
         app = app.route("/api/vps/subscription-plans", web::get().to(list_subscription_plans));
