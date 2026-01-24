@@ -686,13 +686,16 @@ systemctl start conductor
 # 11. Download and install Spoq CLI
 curl -fsSL https://download.spoq.dev/cli | bash
 
-# 12. Setup welcome message
+# 12. Setup welcome message (only for interactive sessions to not break SCP)
 cat > /root/.bashrc << 'BASHRC'
 export PATH="/root/.local/bin:/usr/local/bin:$PATH"
 
-echo ""
-echo "  · spoq vps ·"
-echo ""
+# Only show banner for interactive sessions
+if [[ $- == *i* ]]; then
+    echo ""
+    echo "  · spoq vps ·"
+    echo ""
+fi
 BASHRC
 
 # 13. Configure firewall
