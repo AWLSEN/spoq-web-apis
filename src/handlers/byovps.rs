@@ -53,6 +53,21 @@ pub struct InstallScript {
     pub output: Option<String>,
 }
 
+/// Response for BYOVPS provisioning when status is "pending"
+#[derive(Debug, Serialize)]
+pub struct ByovpsPendingResponse {
+    /// Hostname assigned to the VPS (username.spoq.dev)
+    pub hostname: String,
+    /// IP address of the VPS
+    pub ip_address: String,
+    /// JWT secret for the VPS
+    pub jwt_secret: String,
+    /// SSH password for the VPS
+    pub ssh_password: String,
+    /// Human-readable message
+    pub message: String,
+}
+
 /// Response for BYOVPS provisioning
 #[derive(Debug, Serialize)]
 pub struct ProvisionByovpsResponse {
@@ -714,6 +729,23 @@ mod tests {
         assert!(!is_valid_ip(""));
         assert!(!is_valid_ip("invalid"));
         assert!(!is_valid_ip("192.168.1"));
+    }
+
+    #[test]
+    fn test_byovps_pending_response_serialize() {
+        let response = ByovpsPendingResponse {
+            hostname: "testuser.spoq.dev".to_string(),
+            ip_address: "192.168.1.100".to_string(),
+            jwt_secret: "test-jwt-secret".to_string(),
+            ssh_password: "test-password".to_string(),
+            message: "VPS provisioning pending".to_string(),
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("testuser.spoq.dev"));
+        assert!(json.contains("192.168.1.100"));
+        assert!(json.contains("test-jwt-secret"));
+        assert!(json.contains("VPS provisioning pending"));
     }
 
     #[test]
