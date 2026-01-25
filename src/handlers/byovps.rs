@@ -9,7 +9,6 @@
 use actix_web::{web, HttpResponse};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
-use uuid::Uuid;
 
 use crate::config::Config;
 use crate::error::{AppError, AppResult};
@@ -30,24 +29,6 @@ pub struct ProvisionByovpsRequest {
     pub ssh_password: String,
 }
 
-/// JWT credentials for the VPS
-#[derive(Debug, Serialize)]
-pub struct JwtCredentials {
-    /// JWT token for the VPS to authenticate with central server
-    pub jwt_token: String,
-    /// Token expiration timestamp
-    pub expires_at: String,
-}
-
-/// Install script status and output
-#[derive(Debug, Serialize)]
-pub struct InstallScript {
-    /// Status: "success" or "failed"
-    pub status: String,
-    /// Output from the script (stdout/stderr, truncated)
-    pub output: Option<String>,
-}
-
 /// Response for BYOVPS provisioning when status is "pending"
 #[derive(Debug, Serialize)]
 pub struct ByovpsPendingResponse {
@@ -61,23 +42,6 @@ pub struct ByovpsPendingResponse {
     pub ssh_password: String,
     /// Human-readable message
     pub message: String,
-}
-
-/// Response for BYOVPS provisioning
-#[derive(Debug, Serialize)]
-pub struct ProvisionByovpsResponse {
-    /// Internal VPS record ID
-    pub id: Uuid,
-    /// Hostname assigned to the VPS (username.spoq.dev)
-    pub hostname: String,
-    /// Current status of the provisioning
-    pub status: String,
-    /// Human-readable message
-    pub message: String,
-    /// JWT credentials for VPS authentication
-    pub credentials: JwtCredentials,
-    /// Install script execution details
-    pub install_script: InstallScript,
 }
 
 /// Validate an IPv4 address format
@@ -459,50 +423,5 @@ mod tests {
         assert_eq!(request.vps_ip, "192.168.1.100");
         assert_eq!(request.ssh_username, "root");
         assert_eq!(request.ssh_password, "securepassword123");
-    }
-
-    #[test]
-    fn test_provision_byovps_response_serialize() {
-        let response = ProvisionByovpsResponse {
-            id: Uuid::nil(),
-            hostname: "testuser.spoq.dev".to_string(),
-            status: "ready".to_string(),
-            message: "BYOVPS provisioned successfully".to_string(),
-            credentials: JwtCredentials {
-                jwt_token: "test.jwt.token".to_string(),
-                expires_at: "2024-12-31T23:59:59Z".to_string(),
-            },
-            install_script: InstallScript {
-                status: "success".to_string(),
-                output: Some("Setup complete".to_string()),
-            },
-        };
-
-        let json = serde_json::to_string(&response).unwrap();
-        assert!(json.contains("testuser.spoq.dev"));
-        assert!(json.contains("ready"));
-        assert!(json.contains("success"));
-    }
-
-    #[test]
-    fn test_provision_byovps_response_without_output() {
-        let response = ProvisionByovpsResponse {
-            id: Uuid::new_v4(),
-            hostname: "user.spoq.dev".to_string(),
-            status: "failed".to_string(),
-            message: "SSH connection failed".to_string(),
-            credentials: JwtCredentials {
-                jwt_token: "test.jwt.token".to_string(),
-                expires_at: "2024-12-31T23:59:59Z".to_string(),
-            },
-            install_script: InstallScript {
-                status: "failed".to_string(),
-                output: None,
-            },
-        };
-
-        let json = serde_json::to_string(&response).unwrap();
-        assert!(json.contains("failed"));
-        assert!(json.contains("\"status\":\"failed\""));
     }
 }

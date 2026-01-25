@@ -10,7 +10,7 @@
 //! - Script generation and execution flow
 //! - Error handling for duplicate VPS, invalid inputs, etc.
 
-use spoq_web_apis::handlers::byovps::{ProvisionByovpsRequest, ProvisionByovpsResponse};
+use spoq_web_apis::handlers::byovps::{ProvisionByovpsRequest, ByovpsPendingResponse};
 use spoq_web_apis::services::hostinger::generate_post_install_script;
 
 // ============================================================================
@@ -57,80 +57,40 @@ fn test_provision_byovps_request_with_special_chars_in_password() {
 }
 
 #[test]
-fn test_provision_byovps_response_success() {
-    use spoq_web_apis::handlers::byovps::{JwtCredentials, InstallScript};
-    use uuid::Uuid;
-
-    let response = ProvisionByovpsResponse {
-        id: Uuid::new_v4(),
+fn test_byovps_pending_response_serialization() {
+    let response = ByovpsPendingResponse {
         hostname: "alice.spoq.dev".to_string(),
-        status: "ready".to_string(),
-        message: "BYOVPS provisioned successfully. Your VPS is accessible at alice.spoq.dev".to_string(),
-        credentials: JwtCredentials {
-            jwt_token: "test-jwt-token".to_string(),
-            expires_at: "2026-01-23T00:00:00Z".to_string(),
-        },
-        install_script: InstallScript {
-            status: "success".to_string(),
-            output: Some("Installation completed successfully".to_string()),
-        },
+        ip_address: "45.76.123.45".to_string(),
+        jwt_secret: "test-jwt-secret".to_string(),
+        ssh_password: "SecurePassword123!".to_string(),
+        message: "SSH script executed. CLI will poll for health.".to_string(),
     };
 
     let json = serde_json::to_string(&response).unwrap();
     assert!(json.contains("alice.spoq.dev"));
-    assert!(json.contains("ready"));
-    assert!(json.contains("\"status\":\"success\""));
-    assert!(json.contains("Installation completed successfully"));
+    assert!(json.contains("45.76.123.45"));
+    assert!(json.contains("test-jwt-secret"));
+    assert!(json.contains("SSH script executed"));
 }
 
 #[test]
-fn test_provision_byovps_response_failure() {
-    use spoq_web_apis::handlers::byovps::{JwtCredentials, InstallScript};
-    use uuid::Uuid;
-
-    let response = ProvisionByovpsResponse {
-        id: Uuid::new_v4(),
+fn test_byovps_pending_response_all_fields_present() {
+    let response = ByovpsPendingResponse {
         hostname: "bob.spoq.dev".to_string(),
-        status: "failed".to_string(),
-        message: "BYOVPS provisioning failed. Check the script output for details.".to_string(),
-        credentials: JwtCredentials {
-            jwt_token: "test-jwt-token".to_string(),
-            expires_at: "2026-01-23T00:00:00Z".to_string(),
-        },
-        install_script: InstallScript {
-            status: "failed".to_string(),
-            output: Some("SSH connection failed: Connection refused".to_string()),
-        },
+        ip_address: "192.168.1.100".to_string(),
+        jwt_secret: "jwt-secret-value".to_string(),
+        ssh_password: "password123".to_string(),
+        message: "Pending health check".to_string(),
     };
 
     let json = serde_json::to_string(&response).unwrap();
-    assert!(json.contains("failed"));
-    assert!(json.contains("\"status\":\"failed\""));
-    assert!(json.contains("SSH connection failed"));
-}
 
-#[test]
-fn test_provision_byovps_response_with_null_output() {
-    use spoq_web_apis::handlers::byovps::{JwtCredentials, InstallScript};
-    use uuid::Uuid;
-
-    let response = ProvisionByovpsResponse {
-        id: Uuid::new_v4(),
-        hostname: "test.spoq.dev".to_string(),
-        status: "provisioning".to_string(),
-        message: "Provisioning in progress".to_string(),
-        credentials: JwtCredentials {
-            jwt_token: "test-jwt-token".to_string(),
-            expires_at: "2026-01-23T00:00:00Z".to_string(),
-        },
-        install_script: InstallScript {
-            status: "pending".to_string(),
-            output: None,
-        },
-    };
-
-    let json = serde_json::to_string(&response).unwrap();
-    assert!(json.contains("\"output\":null"));
+    // Verify all required fields are present
+    assert!(json.contains("\"hostname\":"));
+    assert!(json.contains("\"ip_address\":"));
+    assert!(json.contains("\"jwt_secret\":"));
+    assert!(json.contains("\"ssh_password\":"));
+    assert!(json.contains("\"message\":"));
 }
 
 // ============================================================================
