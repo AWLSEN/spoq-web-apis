@@ -30,7 +30,7 @@ pub use vps::{
     ConfirmVpsRequest, ConfirmVpsResponse, DataCentersResponse, ResetPasswordRequest,
     SuccessResponse, VpsPlansResponse,
 };
-pub use byovps::{provision_byovps, ProvisionByovpsRequest, ProvisionByovpsResponse};
+pub use byovps::{provision_byovps, ByovpsPendingResponse, ProvisionByovpsRequest, ProvisionByovpsResponse};
 pub use admin::{cleanup_all_vps, cleanup_user_vps, list_all_vps};
 pub use payment::{
     create_checkout_session, create_portal_session, get_session_status, payment_cancel,
