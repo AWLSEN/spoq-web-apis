@@ -264,7 +264,7 @@ pub async fn provision_byovps(
                     }
                     Err(_) => {
                         // CNAME doesn't exist, create it
-                        match cf.create_cname_record(&subdomain, &tunnel_hostname).await {
+                        match cf.create_cname_record(&subdomain, &creds.tunnel_id).await {
                             Ok(record) => {
                                 tracing::info!(
                                     "CNAME record created: {}.spoq.dev -> {} (id: {})",
