@@ -99,6 +99,7 @@ pub struct UserVps {
     pub ssh_password_hash: String,
     pub jwt_secret: String,
     pub dns_record_id: Option<String>,
+    pub tunnel_id: Option<String>,
     pub device_type: String,
     pub created_at: DateTime<Utc>,
     pub ready_at: Option<DateTime<Utc>>,
@@ -327,6 +328,9 @@ pub struct ProvisionPendingResponse {
     pub jwt_secret: String,
     /// SSH password for server access (plaintext)
     pub ssh_password: String,
+    /// Cloudflare Tunnel ID (if tunnel was created)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tunnel_id: Option<String>,
     /// Status message for the user
     pub message: String,
 }

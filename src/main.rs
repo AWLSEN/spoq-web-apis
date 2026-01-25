@@ -80,13 +80,23 @@ async fn main() -> std::io::Result<()> {
     });
 
     // Create Cloudflare client if API token and zone ID are configured
+    // Use with_account_id() if account_id is also configured (required for tunnel operations)
     let cloudflare_client = match (&config.cloudflare_api_token, &config.cloudflare_zone_id) {
         (Some(token), Some(zone_id)) => {
-            tracing::info!("Cloudflare DNS client configured");
-            Some(web::Data::new(CloudflareService::new(
-                token.clone(),
-                zone_id.clone(),
-            )))
+            if let Some(account_id) = &config.cloudflare_account_id {
+                tracing::info!("Cloudflare DNS client configured with account_id (tunnel support enabled)");
+                Some(web::Data::new(CloudflareService::with_account_id(
+                    token.clone(),
+                    zone_id.clone(),
+                    account_id.clone(),
+                )))
+            } else {
+                tracing::info!("Cloudflare DNS client configured (no account_id - tunnel support disabled)");
+                Some(web::Data::new(CloudflareService::new(
+                    token.clone(),
+                    zone_id.clone(),
+                )))
+            }
         }
         _ => {
             tracing::warn!("Cloudflare DNS not configured - DNS records won't be created");

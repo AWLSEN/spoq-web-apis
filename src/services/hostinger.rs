@@ -515,21 +515,43 @@ impl HostingerClient {
     }
 }
 
+/// Parameters for generating the post-install script
+#[derive(Debug, Clone)]
+pub struct PostInstallParams<'a> {
+    /// Password for the root user
+    pub ssh_password: &'a str,
+    /// The hostname for this VPS (e.g., "username.spoq.dev")
+    pub hostname: &'a str,
+    /// URL to download the Conductor binary
+    pub conductor_url: &'a str,
+    /// JWT secret for Conductor authentication
+    pub jwt_secret: &'a str,
+    /// User UUID who owns this VPS
+    pub owner_id: &'a str,
+    /// Cloudflare Tunnel ID
+    pub tunnel_id: &'a str,
+    /// Cloudflare Tunnel secret (base64 encoded)
+    pub tunnel_secret: &'a str,
+    /// Cloudflare Account ID
+    pub account_id: &'a str,
+}
+
 /// Generate the post-install script content for VPS provisioning
 ///
 /// # Arguments
-/// * `ssh_password` - Password for the spoq user
-/// * `hostname` - The hostname for this VPS (e.g., "username.spoq.dev")
-/// * `conductor_url` - URL to download the Conductor binary
-/// * `jwt_secret` - JWT secret for Conductor authentication
-/// * `owner_id` - User UUID who owns this VPS
-pub fn generate_post_install_script(
-    ssh_password: &str,
-    hostname: &str,
-    conductor_url: &str,
-    jwt_secret: &str,
-    owner_id: &str,
-) -> String {
+/// * `params` - PostInstallParams containing all configuration values
+pub fn generate_post_install_script(params: &PostInstallParams) -> String {
+    let PostInstallParams {
+        ssh_password,
+        hostname,
+        conductor_url,
+        jwt_secret,
+        owner_id,
+        tunnel_id,
+        tunnel_secret,
+        account_id,
+    } = params;
+
     format!(
         r#"#!/bin/bash
 # Spoq VPS Provisioning Script
@@ -545,6 +567,9 @@ HOSTNAME="{hostname}"
 CONDUCTOR_URL="{conductor_url}"
 JWT_SECRET="{jwt_secret}"
 OWNER_ID="{owner_id}"
+TUNNEL_ID="{tunnel_id}"
+TUNNEL_SECRET="{tunnel_secret}"
+CF_ACCOUNT_ID="{account_id}"
 
 echo "=== Spoq VPS Provisioning ==="
 
@@ -698,46 +723,65 @@ if [[ $- == *i* ]]; then
 fi
 BASHRC
 
-# 13. Configure firewall
+# 13. Configure firewall (SSH only - cloudflared tunnel is outbound-only)
 ufw allow 22    # SSH
-ufw allow 80    # HTTP (for Let's Encrypt verification)
-ufw allow 443   # HTTPS
 ufw --force enable
 
-# 14. Install Caddy
-apt-get install -y debian-keyring debian-archive-keyring apt-transport-https
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
-apt-get update && apt-get install -y caddy
+# 14. Install cloudflared
+echo "Installing cloudflared..."
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cloudflared.deb
+dpkg -i /tmp/cloudflared.deb
+rm /tmp/cloudflared.deb
 
-# 15. Configure Caddy
-cat > /etc/caddy/Caddyfile << EOF
-$HOSTNAME {{
-    reverse_proxy localhost:8080 {{
-        header_up X-Forwarded-From caddy
-    }}
+# 15. Create tunnel credentials
+mkdir -p /root/.cloudflared
+cat > /root/.cloudflared/$TUNNEL_ID.json << TUNNELCRED
+{{
+  "AccountTag": "$CF_ACCOUNT_ID",
+  "TunnelID": "$TUNNEL_ID",
+  "TunnelSecret": "$TUNNEL_SECRET"
 }}
+TUNNELCRED
+chmod 600 /root/.cloudflared/$TUNNEL_ID.json
 
-http://*.$HOSTNAME {{
-    reverse_proxy localhost:{{labels.3}}
-}}
-EOF
+# 16. Configure cloudflared
+mkdir -p /etc/cloudflared
+cat > /etc/cloudflared/config.yml << CFCONFIG
+tunnel: $TUNNEL_ID
+credentials-file: /root/.cloudflared/$TUNNEL_ID.json
 
-systemctl enable caddy
-systemctl restart caddy
+ingress:
+  - hostname: $HOSTNAME
+    service: http://localhost:8080
+  - service: http_status:404
+CFCONFIG
+chmod 600 /etc/cloudflared/config.yml
+
+# 17. Start cloudflared service
+cloudflared service install
+systemctl enable cloudflared
+systemctl start cloudflared
 
 # Wait a few seconds for services to fully start
 sleep 5
 
 echo "=== Provisioning Complete ==="
 echo "Conductor: $(systemctl is-active conductor)"
-echo "Caddy: $(systemctl is-active caddy)"
+echo "Cloudflared: $(systemctl is-active cloudflared)"
 
 # If Conductor isn't active, show the error and exit with failure
 if [ "$(systemctl is-active conductor)" != "active" ]; then
     echo ""
     echo "=== Conductor Error Log ==="
     journalctl -u conductor -n 20 --no-pager || echo "Could not retrieve logs"
+    exit 1
+fi
+
+# If cloudflared isn't active, show the error and exit with failure
+if [ "$(systemctl is-active cloudflared)" != "active" ]; then
+    echo ""
+    echo "=== Cloudflared Error Log ==="
+    journalctl -u cloudflared -n 20 --no-pager || echo "Could not retrieve logs"
     exit 1
 fi
 
@@ -749,6 +793,9 @@ exit 0
         conductor_url = conductor_url,
         jwt_secret = jwt_secret,
         owner_id = owner_id,
+        tunnel_id = tunnel_id,
+        tunnel_secret = tunnel_secret,
+        account_id = account_id,
     )
 }
 
@@ -758,24 +805,83 @@ mod tests {
 
     #[test]
     fn test_generate_post_install_script() {
-        let script = generate_post_install_script(
-            "TestPassword123!",
-            "test.spoq.dev",
-            "https://spoq.dev/releases/conductor",
-            "test-jwt-secret-at-least-32-characters-long",
-            "owner-123",
-        );
+        let params = PostInstallParams {
+            ssh_password: "TestPassword123!",
+            hostname: "test.spoq.dev",
+            conductor_url: "https://spoq.dev/releases/conductor",
+            jwt_secret: "test-jwt-secret-at-least-32-characters-long",
+            owner_id: "owner-123",
+            tunnel_id: "test-tunnel-id-123",
+            tunnel_secret: "dGVzdC10dW5uZWwtc2VjcmV0",
+            account_id: "cf-account-123",
+        };
+        let script = generate_post_install_script(&params);
 
+        // Basic parameters
         assert!(script.contains("TestPassword123!"));
         assert!(script.contains("test.spoq.dev"));
         assert!(script.contains("[auth]"));  // auth section in config
         assert!(script.contains("jwt_secret"));
         assert!(script.contains("owner_id"));
         assert!(script.contains("systemctl enable conductor"));
-        assert!(script.contains("systemctl enable caddy"));
-        // Check for wildcard HTTP block with dynamic routing
-        assert!(script.contains("http://*."));
-        assert!(script.contains("reverse_proxy localhost:{labels.3}"));
+
+        // Cloudflared installation
+        assert!(script.contains("cloudflared-linux-amd64.deb"));
+        assert!(script.contains("dpkg -i /tmp/cloudflared.deb"));
+
+        // Tunnel credentials
+        assert!(script.contains("test-tunnel-id-123"));
+        assert!(script.contains("dGVzdC10dW5uZWwtc2VjcmV0"));
+        assert!(script.contains("cf-account-123"));
+        assert!(script.contains("/root/.cloudflared/$TUNNEL_ID.json"));
+
+        // Cloudflared config
+        assert!(script.contains("/etc/cloudflared/config.yml"));
+        assert!(script.contains("tunnel: $TUNNEL_ID"));
+        assert!(script.contains("credentials-file:"));
+        assert!(script.contains("hostname: $HOSTNAME"));
+        assert!(script.contains("service: http://localhost:8080"));
+        assert!(script.contains("http_status:404"));
+
+        // Cloudflared service
+        assert!(script.contains("cloudflared service install"));
+        assert!(script.contains("systemctl enable cloudflared"));
+        assert!(script.contains("systemctl start cloudflared"));
+
+        // Should NOT contain Caddy
+        assert!(!script.contains("caddy"));
+        assert!(!script.contains("Caddyfile"));
+
+        // Firewall should only allow SSH (no 80/443 for tunnel)
+        assert!(script.contains("ufw allow 22"));
+        assert!(!script.contains("ufw allow 80"));
+        assert!(!script.contains("ufw allow 443"));
+    }
+
+    #[test]
+    fn test_generate_post_install_script_tunnel_config_format() {
+        let params = PostInstallParams {
+            ssh_password: "pass",
+            hostname: "user.spoq.dev",
+            conductor_url: "https://example.com",
+            jwt_secret: "secret",
+            owner_id: "owner",
+            tunnel_id: "abc-123-def",
+            tunnel_secret: "c2VjcmV0LWtleQ==",
+            account_id: "acct-456",
+        };
+        let script = generate_post_install_script(&params);
+
+        // Verify tunnel credentials JSON structure
+        assert!(script.contains(r#""AccountTag": "$CF_ACCOUNT_ID""#));
+        assert!(script.contains(r#""TunnelID": "$TUNNEL_ID""#));
+        assert!(script.contains(r#""TunnelSecret": "$TUNNEL_SECRET""#));
+
+        // Verify ingress config structure
+        assert!(script.contains("ingress:"));
+        assert!(script.contains("- hostname: $HOSTNAME"));
+        assert!(script.contains("service: http://localhost:8080"));
+        assert!(script.contains("- service: http_status:404"));
     }
 
     #[test]

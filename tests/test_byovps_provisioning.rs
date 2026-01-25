@@ -11,7 +11,7 @@
 //! - Error handling for duplicate VPS, invalid inputs, etc.
 
 use spoq_web_apis::handlers::byovps::{ProvisionByovpsRequest, ByovpsPendingResponse};
-use spoq_web_apis::services::hostinger::generate_post_install_script;
+use spoq_web_apis::services::hostinger::{generate_post_install_script, PostInstallParams};
 
 // ============================================================================
 // Request/Response Serialization Tests
@@ -134,19 +134,38 @@ fn test_hostname_uniqueness_per_user() {
 // Script Generation for BYOVPS Tests
 // ============================================================================
 
+/// Helper to create test params with tunnel credentials
+fn make_params<'a>(
+    ssh_password: &'a str,
+    hostname: &'a str,
+    jwt_secret: &'a str,
+    owner_id: &'a str,
+) -> PostInstallParams<'a> {
+    PostInstallParams {
+        ssh_password,
+        hostname,
+        conductor_url: "https://download.spoq.dev/conductor",
+        jwt_secret,
+        owner_id,
+        tunnel_id: "test-tunnel-id",
+        tunnel_secret: "dGVzdC10dW5uZWwtc2VjcmV0",
+        account_id: "test-account-id",
+    }
+}
+
 #[test]
 fn test_byovps_script_generation_basic() {
     let user_id = "550e8400-e29b-41d4-a716-446655440000";
     let jwt_secret = "byovps-jwt-secret-xyz";
     let hostname = "alice.spoq.dev";
 
-    let script = generate_post_install_script(
+    let params = make_params(
         "TestPassword123!",
         hostname,
-        "https://download.spoq.dev/conductor",
         jwt_secret,
         user_id,
     );
+    let script = generate_post_install_script(&params);
 
     // Verify all required components are injected
     assert!(script.contains(&format!("OWNER_ID=\"{}\"", user_id)));
@@ -156,13 +175,13 @@ fn test_byovps_script_generation_basic() {
 
 #[test]
 fn test_byovps_script_includes_conductor_setup() {
-    let script = generate_post_install_script(
+    let params = make_params(
         "TestPassword123!",
         "bob.spoq.dev",
-        "https://download.spoq.dev/conductor",
         "jwt-secret",
         "user-uuid",
     );
+    let script = generate_post_install_script(&params);
 
     // Verify Conductor is downloaded
     assert!(script.contains("https://download.spoq.dev/conductor"));
@@ -175,13 +194,13 @@ fn test_byovps_script_includes_conductor_setup() {
 
 #[test]
 fn test_byovps_script_includes_cli_setup() {
-    let script = generate_post_install_script(
+    let params = make_params(
         "TestPassword123!",
         "charlie.spoq.dev",
-        "https://download.spoq.dev/conductor",
         "jwt-secret",
         "user-uuid",
     );
+    let script = generate_post_install_script(&params);
 
     // Verify CLI is downloaded
     assert!(script.contains("https://download.spoq.dev/cli"));
@@ -191,53 +210,65 @@ fn test_byovps_script_includes_cli_setup() {
 }
 
 #[test]
-fn test_byovps_script_includes_caddy_reverse_proxy() {
-    let script = generate_post_install_script(
-        "TestPassword123!",
-        "diana.spoq.dev",
-        "https://download.spoq.dev/conductor",
-        "jwt-secret",
-        "user-uuid",
-    );
+fn test_byovps_script_includes_cloudflared_tunnel() {
+    let params = PostInstallParams {
+        ssh_password: "TestPassword123!",
+        hostname: "diana.spoq.dev",
+        conductor_url: "https://download.spoq.dev/conductor",
+        jwt_secret: "jwt-secret",
+        owner_id: "user-uuid",
+        tunnel_id: "tunnel-abc-123",
+        tunnel_secret: "c2VjcmV0LWtleQ==",
+        account_id: "cf-account-456",
+    };
+    let script = generate_post_install_script(&params);
 
-    // Verify Caddy is installed
-    assert!(script.contains("caddy"));
+    // Verify cloudflared is installed
+    assert!(script.contains("cloudflared"));
+    assert!(script.contains("cloudflared-linux-amd64.deb"));
 
-    // Verify reverse proxy to Conductor (port 8080)
-    assert!(script.contains("reverse_proxy localhost:8080") || script.contains("reverse_proxy 127.0.0.1:8080"));
+    // Verify tunnel credentials are configured
+    assert!(script.contains("TUNNEL_ID=\"tunnel-abc-123\""));
+    assert!(script.contains("TUNNEL_SECRET=\"c2VjcmV0LWtleQ==\""));
+    assert!(script.contains("CF_ACCOUNT_ID=\"cf-account-456\""));
 
-    // Verify hostname is used in Caddyfile
-    assert!(script.contains("$HOSTNAME") || script.contains("diana.spoq.dev"));
+    // Verify cloudflared config with ingress to Conductor (port 8080)
+    assert!(script.contains("/etc/cloudflared/config.yml"));
+    assert!(script.contains("service: http://localhost:8080"));
+
+    // Should NOT contain Caddy (replaced by cloudflared)
+    assert!(!script.contains("caddy"));
+    assert!(!script.contains("Caddyfile"));
 }
 
 #[test]
 fn test_byovps_script_includes_firewall_setup() {
-    let script = generate_post_install_script(
+    let params = make_params(
         "TestPassword123!",
         "test.spoq.dev",
-        "https://download.spoq.dev/conductor",
         "jwt-secret",
         "user-uuid",
     );
+    let script = generate_post_install_script(&params);
 
-    // Verify UFW firewall rules
+    // Verify UFW firewall rules - only SSH needed (tunnel is outbound-only)
     assert!(script.contains("ufw allow 22")); // SSH
-    assert!(script.contains("ufw allow 80")); // HTTP
-    assert!(script.contains("ufw allow 443")); // HTTPS
-    // Note: Conductor runs on localhost:8080 behind Caddy reverse proxy
-    // so port 8080 should NOT be exposed to the internet
     assert!(script.contains("ufw --force enable"));
+
+    // Should NOT expose port 80/443 (cloudflared tunnel doesn't need them)
+    assert!(!script.contains("ufw allow 80"));
+    assert!(!script.contains("ufw allow 443"));
 }
 
 #[test]
 fn test_byovps_script_creates_vps_marker() {
-    let script = generate_post_install_script(
+    let params = make_params(
         "TestPassword123!",
         "marker.spoq.dev",
-        "https://download.spoq.dev/conductor",
         "jwt-secret",
         "user-uuid",
     );
+    let script = generate_post_install_script(&params);
 
     // Verify marker file creation
     assert!(script.contains("/etc/spoq/vps.marker"));
@@ -247,21 +278,29 @@ fn test_byovps_script_creates_vps_marker() {
 
 #[test]
 fn test_byovps_script_different_users_get_different_scripts() {
-    let script1 = generate_post_install_script(
-        "TestPassword123!",
-        "user1.spoq.dev",
-        "https://download.spoq.dev/conductor",
-        "secret-1",
-        "user-1-id",
-    );
+    let params1 = PostInstallParams {
+        ssh_password: "TestPassword123!",
+        hostname: "user1.spoq.dev",
+        conductor_url: "https://download.spoq.dev/conductor",
+        jwt_secret: "secret-1",
+        owner_id: "user-1-id",
+        tunnel_id: "tunnel-1",
+        tunnel_secret: "secret1",
+        account_id: "account-1",
+    };
+    let script1 = generate_post_install_script(&params1);
 
-    let script2 = generate_post_install_script(
-        "TestPassword456!",
-        "user2.spoq.dev",
-        "https://download.spoq.dev/conductor",
-        "secret-2",
-        "user-2-id",
-    );
+    let params2 = PostInstallParams {
+        ssh_password: "TestPassword456!",
+        hostname: "user2.spoq.dev",
+        conductor_url: "https://download.spoq.dev/conductor",
+        jwt_secret: "secret-2",
+        owner_id: "user-2-id",
+        tunnel_id: "tunnel-2",
+        tunnel_secret: "secret2",
+        account_id: "account-2",
+    };
+    let script2 = generate_post_install_script(&params2);
 
     // Scripts should be different
     assert_ne!(script1, script2);
@@ -270,10 +309,12 @@ fn test_byovps_script_different_users_get_different_scripts() {
     assert!(script1.contains("user-1-id"));
     assert!(script1.contains("secret-1"));
     assert!(script1.contains("user1.spoq.dev"));
+    assert!(script1.contains("tunnel-1"));
 
     assert!(script2.contains("user-2-id"));
     assert!(script2.contains("secret-2"));
     assert!(script2.contains("user2.spoq.dev"));
+    assert!(script2.contains("tunnel-2"));
 
     // No cross-contamination
     assert!(!script1.contains("user-2-id"));

@@ -13,7 +13,7 @@ use sqlx::PgPool;
 use crate::config::Config;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthenticatedUser;
-use crate::services::hostinger::generate_post_install_script;
+use crate::services::hostinger::{generate_post_install_script, PostInstallParams};
 use crate::models::UserVps;
 use crate::services::cloudflare::CloudflareService;
 use crate::services::ssh_installer::{SshConfig, SshInstallerService};
@@ -208,58 +208,80 @@ pub async fn provision_byovps(
         req.vps_ip
     );
 
-    // Create DNS A record if Cloudflare is configured
-    if let Some(cf) = &cloudflare {
+    // Create Cloudflare Tunnel and DNS records
+    let tunnel_credentials = if let Some(cf) = &cloudflare {
         let subdomain = username.to_lowercase();
-        match cf.update_dns_record(&subdomain, &req.vps_ip).await {
-            Ok(record) => {
-                tracing::info!(
-                    "DNS record created/updated: {}.spoq.dev -> {} (id: {})",
-                    subdomain,
-                    req.vps_ip,
-                    record.id
-                );
-            }
-            Err(e) => {
-                tracing::error!("Failed to create DNS record for {}: {}", hostname, e);
-                // Continue anyway - DNS is not critical for BYOVPS
-            }
-        }
+        let tunnel_name = format!("spoq-{}", subdomain);
 
-        // Create wildcard DNS record for subdomains (e.g., *.username.spoq.dev)
-        match cf.update_wildcard_dns_record(&subdomain, &req.vps_ip).await {
-            Ok(record) => {
+        // Create Cloudflare Tunnel
+        let creds = match cf.create_tunnel(&tunnel_name).await {
+            Ok(creds) => {
                 tracing::info!(
-                    "Wildcard DNS record created/updated: *.{}.spoq.dev -> {} (id: {})",
-                    subdomain,
-                    req.vps_ip,
-                    record.id
+                    "Cloudflare tunnel created: {} (id: {})",
+                    tunnel_name,
+                    creds.tunnel_id
                 );
+
+                // Create CNAME record pointing to the tunnel
+                let tunnel_hostname = format!("{}.cfargotunnel.com", creds.tunnel_id);
+                match cf.create_cname_record(&subdomain, &tunnel_hostname).await {
+                    Ok(record) => {
+                        tracing::info!(
+                            "CNAME record created: {}.spoq.dev -> {} (id: {})",
+                            subdomain,
+                            tunnel_hostname,
+                            record.id
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to create CNAME record for {}: {}",
+                            hostname,
+                            e
+                        );
+                        // Clean up the tunnel since we can't route to it
+                        let _ = cf.delete_tunnel(&creds.tunnel_id).await;
+                        return Err(AppError::Internal(format!(
+                            "Failed to create DNS routing for tunnel: {}",
+                            e
+                        )));
+                    }
+                }
+
+                Some(creds)
             }
             Err(e) => {
-                tracing::error!(
-                    "Failed to create wildcard DNS record for *.{}.spoq.dev: {}",
-                    subdomain,
+                tracing::error!("Failed to create Cloudflare tunnel: {}", e);
+                return Err(AppError::Internal(format!(
+                    "Failed to create Cloudflare tunnel: {}",
                     e
-                );
-                // Continue anyway - wildcard DNS is not critical for BYOVPS
+                )));
             }
-        }
-    } else {
-        tracing::warn!(
-            "Cloudflare not configured - skipping DNS record creation for {}",
-            hostname
-        );
-    }
+        };
 
-    // Generate the post-install script (config written directly, no registration needed)
-    let script_content = generate_post_install_script(
-        &req.ssh_password,
-        &hostname,
-        "https://download.spoq.dev/conductor",
-        &config.jwt_secret,
-        &user.user_id.to_string(),
-    );
+        creds
+    } else {
+        tracing::error!("Cloudflare not configured - cannot provision BYOVPS without tunnel");
+        return Err(AppError::Internal(
+            "Cloudflare tunnel configuration is required for BYOVPS".to_string(),
+        ));
+    };
+
+    // Get tunnel credentials (we know it's Some at this point)
+    let creds = tunnel_credentials.unwrap();
+
+    // Generate the post-install script with tunnel configuration
+    let params = PostInstallParams {
+        ssh_password: &req.ssh_password,
+        hostname: &hostname,
+        conductor_url: "https://download.spoq.dev/conductor",
+        jwt_secret: &config.jwt_secret,
+        owner_id: &user.user_id.to_string(),
+        tunnel_id: &creds.tunnel_id,
+        tunnel_secret: &creds.tunnel_secret,
+        account_id: &creds.account_tag,
+    };
+    let script_content = generate_post_install_script(&params);
 
     // SSH into the VPS and execute the script
     let ssh_config = SshConfig::new(&req.vps_ip, &req.ssh_username, &req.ssh_password)

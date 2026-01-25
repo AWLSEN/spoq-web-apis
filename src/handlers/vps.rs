@@ -29,7 +29,7 @@ use crate::models::{
     VpsPrecheckResponse, VpsStatusResponse,
 };
 use crate::services::cloudflare::CloudflareService;
-use crate::services::hostinger::{generate_post_install_script, CreateVpsRequest, HostingerClient, VpsSetup};
+use crate::services::hostinger::{generate_post_install_script, CreateVpsRequest, HostingerClient, PostInstallParams, VpsSetup};
 
 /// Response for listing VPS plans
 #[derive(Debug, Serialize)]
@@ -368,7 +368,7 @@ pub async fn provision_vps(
     pool: web::Data<PgPool>,
     hostinger: web::Data<HostingerClient>,
     config: web::Data<Config>,
-    _cloudflare: Option<web::Data<CloudflareService>>,
+    cloudflare: Option<web::Data<CloudflareService>>,
     req: web::Json<ProvisionVpsRequest>,
 ) -> AppResult<HttpResponse> {
     // Validate password
@@ -451,14 +451,67 @@ pub async fn provision_vps(
     let script_uuid = Uuid::new_v4();
     let jwt_secret = config.jwt_secret.clone();
 
-    // Generate post-install script (config written directly, no registration needed)
-    let script_content = generate_post_install_script(
-        &req.ssh_password,
-        &hostname,
-        "https://download.spoq.dev/conductor",
-        &jwt_secret,
-        &user.user_id.to_string(),
-    );
+    // Create Cloudflare Tunnel for secure ingress (if Cloudflare is configured with account_id)
+    let tunnel_credentials = if let Some(ref cf) = cloudflare {
+        // Use the username as tunnel name for easy identification
+        let tunnel_name = format!("spoq-{}", username.to_lowercase());
+        match cf.create_tunnel(&tunnel_name).await {
+            Ok(creds) => {
+                tracing::info!(
+                    "Created Cloudflare Tunnel: {} (id: {})",
+                    tunnel_name,
+                    creds.tunnel_id
+                );
+                Some(creds)
+            }
+            Err(e) => {
+                // Log error but continue - tunnel creation is not blocking
+                // The VPS will still be accessible via IP
+                tracing::warn!(
+                    "Failed to create Cloudflare Tunnel (continuing without tunnel): {}",
+                    e
+                );
+                None
+            }
+        }
+    } else {
+        tracing::info!("Cloudflare not configured, skipping tunnel creation");
+        None
+    };
+
+    // Get account_id from config for tunnel credentials
+    let account_id = config.cloudflare_account_id.clone().unwrap_or_default();
+
+    // Generate post-install script with tunnel credentials if available
+    let script_content = if let Some(ref creds) = tunnel_credentials {
+        let params = PostInstallParams {
+            ssh_password: &req.ssh_password,
+            hostname: &hostname,
+            conductor_url: "https://download.spoq.dev/conductor",
+            jwt_secret: &jwt_secret,
+            owner_id: &user.user_id.to_string(),
+            tunnel_id: &creds.tunnel_id,
+            tunnel_secret: &creds.tunnel_secret,
+            account_id: &creds.account_tag,
+        };
+        generate_post_install_script(&params)
+    } else {
+        // Fallback: generate script without tunnel (uses empty tunnel credentials)
+        let params = PostInstallParams {
+            ssh_password: &req.ssh_password,
+            hostname: &hostname,
+            conductor_url: "https://download.spoq.dev/conductor",
+            jwt_secret: &jwt_secret,
+            owner_id: &user.user_id.to_string(),
+            tunnel_id: "",
+            tunnel_secret: "",
+            account_id: &account_id,
+        };
+        generate_post_install_script(&params)
+    };
+
+    // Store tunnel_id for later use (will be saved to DB after VPS is confirmed)
+    let tunnel_id = tunnel_credentials.as_ref().map(|c| c.tunnel_id.clone());
 
     // Create post-install script on Hostinger
     let script = hostinger
@@ -529,6 +582,7 @@ pub async fn provision_vps(
                 data_center_id,
                 jwt_secret,
                 ssh_password: req.ssh_password.clone(),
+                tunnel_id: tunnel_id.clone(),
                 message: "VPS provisioning started. Poll health endpoint until ready, then call /api/vps/confirm.".to_string(),
             }))
         }
@@ -592,46 +646,14 @@ pub async fn get_vps_status(
                             .execute(pool.get_ref())
                             .await?;
 
-                            // Create DNS A record if Cloudflare is configured and we have an IP
-                            if let (Some(cf), Some(ref ip)) = (&cloudflare, &ip_address) {
-                                let subdomain = vps.hostname.replace(".spoq.dev", "");
-                                match cf.update_dns_record(&subdomain, ip).await {
-                                    Ok(record) => {
-                                        tracing::info!(
-                                            "DNS record created/updated: {}.spoq.dev -> {} (id: {})",
-                                            subdomain,
-                                            ip,
-                                            record.id
-                                        );
-
-                                        // Update VPS with DNS record ID
-                                        sqlx::query("UPDATE user_vps SET dns_record_id = $1 WHERE id = $2")
-                                            .bind(&record.id)
-                                            .bind(vps.id)
-                                            .execute(pool.get_ref())
-                                            .await?;
-                                    }
-                                    Err(e) => {
-                                        tracing::error!("Failed to create DNS record for {}: {}", vps.hostname, e);
-                                        // Continue anyway - DNS is not critical
-                                    }
-                                }
-
-                                // Create wildcard DNS record for subdomains (*.username.spoq.dev)
-                                match cf.update_wildcard_dns_record(&subdomain, ip).await {
-                                    Ok(record) => {
-                                        tracing::info!(
-                                            "Wildcard DNS record created/updated: *.{}.spoq.dev -> {} (id: {})",
-                                            subdomain,
-                                            ip,
-                                            record.id
-                                        );
-                                    }
-                                    Err(e) => {
-                                        tracing::error!("Failed to create wildcard DNS record for *.{}.spoq.dev: {}", subdomain, e);
-                                        // Continue anyway - wildcard DNS is not critical
-                                    }
-                                }
+                            // Setup tunnel and DNS when IP becomes available
+                            if let Some(ref cf) = cloudflare {
+                                setup_tunnel_and_dns(
+                                    cf,
+                                    &pool,
+                                    &vps,
+                                    &ip_address,
+                                ).await;
                             }
 
                             // Reload VPS data
@@ -659,46 +681,20 @@ pub async fn get_vps_status(
                                 .await?;
                             vps.ip_address = ip_address.clone();
 
-                            // Create DNS A record if Cloudflare is configured
-                            if let (Some(cf), Some(ref ip)) = (&cloudflare, &ip_address) {
-                                let subdomain = vps.hostname.replace(".spoq.dev", "");
-                                match cf.update_dns_record(&subdomain, ip).await {
-                                    Ok(record) => {
-                                        tracing::info!(
-                                            "DNS record created/updated: {}.spoq.dev -> {} (id: {})",
-                                            subdomain,
-                                            ip,
-                                            record.id
-                                        );
+                            // Setup tunnel and DNS when IP becomes available
+                            if let Some(ref cf) = cloudflare {
+                                setup_tunnel_and_dns(
+                                    cf,
+                                    &pool,
+                                    &vps,
+                                    &ip_address,
+                                ).await;
 
-                                        // Update VPS with DNS record ID
-                                        sqlx::query("UPDATE user_vps SET dns_record_id = $1 WHERE id = $2")
-                                            .bind(&record.id)
-                                            .bind(vps.id)
-                                            .execute(pool.get_ref())
-                                            .await?;
-                                    }
-                                    Err(e) => {
-                                        tracing::error!("Failed to create DNS record for {}: {}", vps.hostname, e);
-                                        // Continue anyway - DNS is not critical
-                                    }
-                                }
-
-                                // Create wildcard DNS record for subdomains (*.username.spoq.dev)
-                                match cf.update_wildcard_dns_record(&subdomain, ip).await {
-                                    Ok(record) => {
-                                        tracing::info!(
-                                            "Wildcard DNS record created/updated: *.{}.spoq.dev -> {} (id: {})",
-                                            subdomain,
-                                            ip,
-                                            record.id
-                                        );
-                                    }
-                                    Err(e) => {
-                                        tracing::error!("Failed to create wildcard DNS record for *.{}.spoq.dev: {}", subdomain, e);
-                                        // Continue anyway - wildcard DNS is not critical
-                                    }
-                                }
+                                // Reload VPS to get updated tunnel_id
+                                vps = sqlx::query_as("SELECT * FROM user_vps WHERE id = $1")
+                                    .bind(vps.id)
+                                    .fetch_one(pool.get_ref())
+                                    .await?;
                             }
                         }
 
@@ -737,6 +733,136 @@ pub async fn get_vps_status(
             "error": "No VPS found for user",
             "message": "Use POST /api/vps/provision to create a VPS"
         }))),
+    }
+}
+
+/// Helper function to setup tunnel and DNS for a VPS
+///
+/// This function:
+/// 1. Creates a Cloudflare Tunnel if not already created (tunnel_id is None)
+/// 2. Creates a CNAME record pointing to the tunnel if tunnel exists
+/// 3. Falls back to A record if tunnel creation fails
+/// 4. Updates the VPS record with tunnel_id and dns_record_id
+async fn setup_tunnel_and_dns(
+    cf: &web::Data<CloudflareService>,
+    pool: &web::Data<PgPool>,
+    vps: &UserVps,
+    ip_address: &Option<String>,
+) {
+    let subdomain = vps.hostname.replace(".spoq.dev", "");
+
+    // Check if tunnel already exists for this VPS
+    let mut tunnel_id = vps.tunnel_id.clone();
+
+    // If no tunnel exists, try to create one
+    if tunnel_id.is_none() {
+        let tunnel_name = format!("spoq-{}", subdomain);
+        match cf.create_tunnel(&tunnel_name).await {
+            Ok(creds) => {
+                tracing::info!(
+                    "Created Cloudflare Tunnel for VPS {}: {} (id: {})",
+                    vps.id,
+                    tunnel_name,
+                    creds.tunnel_id
+                );
+
+                // Store tunnel_id in database
+                if let Err(e) = sqlx::query("UPDATE user_vps SET tunnel_id = $1 WHERE id = $2")
+                    .bind(&creds.tunnel_id)
+                    .bind(vps.id)
+                    .execute(pool.get_ref())
+                    .await
+                {
+                    tracing::error!("Failed to save tunnel_id to database: {}", e);
+                }
+
+                tunnel_id = Some(creds.tunnel_id);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to create Cloudflare Tunnel for VPS {} (will use A record): {}",
+                    vps.id,
+                    e
+                );
+            }
+        }
+    }
+
+    // Create DNS record
+    if let Some(ref tid) = tunnel_id {
+        // Create CNAME record pointing to tunnel
+        match cf.create_cname_record(&subdomain, tid).await {
+            Ok(record) => {
+                tracing::info!(
+                    "CNAME record created: {}.spoq.dev -> {}.cfargotunnel.com (id: {})",
+                    subdomain,
+                    tid,
+                    record.id
+                );
+
+                // Update VPS with DNS record ID
+                if let Err(e) = sqlx::query("UPDATE user_vps SET dns_record_id = $1 WHERE id = $2")
+                    .bind(&record.id)
+                    .bind(vps.id)
+                    .execute(pool.get_ref())
+                    .await
+                {
+                    tracing::error!("Failed to save dns_record_id to database: {}", e);
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to create CNAME record for {}.spoq.dev: {}",
+                    subdomain,
+                    e
+                );
+                // Continue anyway - DNS is not critical for VPS to function
+            }
+        }
+    } else if let Some(ref ip) = ip_address {
+        // Fallback to A record if tunnel is not available
+        match cf.update_dns_record(&subdomain, ip).await {
+            Ok(record) => {
+                tracing::info!(
+                    "A record created/updated (fallback): {}.spoq.dev -> {} (id: {})",
+                    subdomain,
+                    ip,
+                    record.id
+                );
+
+                // Update VPS with DNS record ID
+                if let Err(e) = sqlx::query("UPDATE user_vps SET dns_record_id = $1 WHERE id = $2")
+                    .bind(&record.id)
+                    .bind(vps.id)
+                    .execute(pool.get_ref())
+                    .await
+                {
+                    tracing::error!("Failed to save dns_record_id to database: {}", e);
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to create A record for {}: {}", vps.hostname, e);
+            }
+        }
+
+        // Create wildcard DNS record for subdomains (*.username.spoq.dev)
+        match cf.update_wildcard_dns_record(&subdomain, ip).await {
+            Ok(record) => {
+                tracing::info!(
+                    "Wildcard A record created/updated: *.{}.spoq.dev -> {} (id: {})",
+                    subdomain,
+                    ip,
+                    record.id
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to create wildcard DNS record for *.{}.spoq.dev: {}",
+                    subdomain,
+                    e
+                );
+            }
+        }
     }
 }
 
