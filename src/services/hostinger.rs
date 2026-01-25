@@ -530,10 +530,8 @@ pub struct PostInstallParams<'a> {
     pub owner_id: &'a str,
     /// Cloudflare Tunnel ID
     pub tunnel_id: &'a str,
-    /// Cloudflare Tunnel secret (base64 encoded)
-    pub tunnel_secret: &'a str,
-    /// Cloudflare Account ID
-    pub account_id: &'a str,
+    /// Cloudflare Tunnel token (JWT for cloudflared authentication)
+    pub tunnel_token: &'a str,
 }
 
 /// Generate the post-install script content for VPS provisioning
@@ -548,8 +546,7 @@ pub fn generate_post_install_script(params: &PostInstallParams) -> String {
         jwt_secret,
         owner_id,
         tunnel_id,
-        tunnel_secret,
-        account_id,
+        tunnel_token,
     } = params;
 
     format!(
@@ -568,8 +565,7 @@ CONDUCTOR_URL="{conductor_url}"
 JWT_SECRET="{jwt_secret}"
 OWNER_ID="{owner_id}"
 TUNNEL_ID="{tunnel_id}"
-TUNNEL_SECRET="{tunnel_secret}"
-CF_ACCOUNT_ID="{account_id}"
+TUNNEL_TOKEN="{tunnel_token}"
 
 echo "=== Spoq VPS Provisioning ==="
 
@@ -729,27 +725,24 @@ ufw --force enable
 
 # 14. Install cloudflared
 echo "Installing cloudflared..."
-curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cloudflared.deb
+ARCH=$(dpkg --print-architecture)
+if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
+    curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb -o /tmp/cloudflared.deb
+else
+    curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cloudflared.deb
+fi
 dpkg -i /tmp/cloudflared.deb
 rm /tmp/cloudflared.deb
 
-# 15. Create tunnel credentials
-mkdir -p /root/.cloudflared
-cat > /root/.cloudflared/$TUNNEL_ID.json << TUNNELCRED
-{{
-  "AccountTag": "$CF_ACCOUNT_ID",
-  "TunnelID": "$TUNNEL_ID",
-  "TunnelSecret": "$TUNNEL_SECRET"
-}}
-TUNNELCRED
-chmod 600 /root/.cloudflared/$TUNNEL_ID.json
-
-# 16. Configure cloudflared
+# 15. Configure cloudflared with token-based auth
 mkdir -p /etc/cloudflared
-cat > /etc/cloudflared/config.yml << CFCONFIG
-tunnel: $TUNNEL_ID
-credentials-file: /root/.cloudflared/$TUNNEL_ID.json
 
+# Store tunnel token securely
+echo "$TUNNEL_TOKEN" > /etc/cloudflared/tunnel-token
+chmod 600 /etc/cloudflared/tunnel-token
+
+# Create config with ingress rules
+cat > /etc/cloudflared/config.yml << CFCONFIG
 ingress:
   - hostname: $HOSTNAME
     service: http://localhost:8080
@@ -757,8 +750,24 @@ ingress:
 CFCONFIG
 chmod 600 /etc/cloudflared/config.yml
 
+# 16. Create cloudflared systemd service with token auth
+cat > /etc/systemd/system/cloudflared.service << CLOUDFLAREDSERVICE
+[Unit]
+Description=cloudflared tunnel
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/cloudflared --no-autoupdate --config /etc/cloudflared/config.yml tunnel run --token $TUNNEL_TOKEN
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+CLOUDFLAREDSERVICE
+
 # 17. Start cloudflared service
-cloudflared service install
+systemctl daemon-reload
 systemctl enable cloudflared
 systemctl start cloudflared
 
@@ -794,8 +803,7 @@ exit 0
         jwt_secret = jwt_secret,
         owner_id = owner_id,
         tunnel_id = tunnel_id,
-        tunnel_secret = tunnel_secret,
-        account_id = account_id,
+        tunnel_token = tunnel_token,
     )
 }
 
@@ -812,8 +820,7 @@ mod tests {
             jwt_secret: "test-jwt-secret-at-least-32-characters-long",
             owner_id: "owner-123",
             tunnel_id: "test-tunnel-id-123",
-            tunnel_secret: "dGVzdC10dW5uZWwtc2VjcmV0",
-            account_id: "cf-account-123",
+            tunnel_token: "eyJhIjoiYWNjb3VudCIsInQiOiJ0dW5uZWwiLCJzIjoic2VjcmV0In0=",
         };
         let script = generate_post_install_script(&params);
 
@@ -829,22 +836,18 @@ mod tests {
         assert!(script.contains("cloudflared-linux-amd64.deb"));
         assert!(script.contains("dpkg -i /tmp/cloudflared.deb"));
 
-        // Tunnel credentials
+        // Token-based tunnel auth
         assert!(script.contains("test-tunnel-id-123"));
-        assert!(script.contains("dGVzdC10dW5uZWwtc2VjcmV0"));
-        assert!(script.contains("cf-account-123"));
-        assert!(script.contains("/root/.cloudflared/$TUNNEL_ID.json"));
+        assert!(script.contains("tunnel-token"));
+        assert!(script.contains("--token"));
 
         // Cloudflared config
         assert!(script.contains("/etc/cloudflared/config.yml"));
-        assert!(script.contains("tunnel: $TUNNEL_ID"));
-        assert!(script.contains("credentials-file:"));
         assert!(script.contains("hostname: $HOSTNAME"));
         assert!(script.contains("service: http://localhost:8080"));
         assert!(script.contains("http_status:404"));
 
-        // Cloudflared service
-        assert!(script.contains("cloudflared service install"));
+        // Cloudflared service (custom, not cloudflared service install)
         assert!(script.contains("systemctl enable cloudflared"));
         assert!(script.contains("systemctl start cloudflared"));
 
@@ -859,7 +862,7 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_post_install_script_tunnel_config_format() {
+    fn test_generate_post_install_script_tunnel_token_format() {
         let params = PostInstallParams {
             ssh_password: "pass",
             hostname: "user.spoq.dev",
@@ -867,15 +870,14 @@ mod tests {
             jwt_secret: "secret",
             owner_id: "owner",
             tunnel_id: "abc-123-def",
-            tunnel_secret: "c2VjcmV0LWtleQ==",
-            account_id: "acct-456",
+            tunnel_token: "eyJ0ZXN0IjoidG9rZW4ifQ==",
         };
         let script = generate_post_install_script(&params);
 
-        // Verify tunnel credentials JSON structure
-        assert!(script.contains(r#""AccountTag": "$CF_ACCOUNT_ID""#));
-        assert!(script.contains(r#""TunnelID": "$TUNNEL_ID""#));
-        assert!(script.contains(r#""TunnelSecret": "$TUNNEL_SECRET""#));
+        // Verify token-based auth (no credentials file)
+        assert!(script.contains("tunnel run --token"));
+        assert!(script.contains("tunnel-token"));
+        assert!(!script.contains("credentials-file"));
 
         // Verify ingress config structure
         assert!(script.contains("ingress:"));

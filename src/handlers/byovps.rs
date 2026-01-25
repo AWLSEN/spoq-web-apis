@@ -237,52 +237,63 @@ pub async fn provision_byovps(
         req.vps_ip
     );
 
-    // Create Cloudflare Tunnel and DNS records
+    // Get or create Cloudflare Tunnel and DNS records
     let tunnel_credentials = if let Some(cf) = &cloudflare {
         let subdomain = username.to_lowercase();
         let tunnel_name = format!("spoq-{}", subdomain);
 
-        // Create Cloudflare Tunnel
-        let creds = match cf.create_tunnel(&tunnel_name).await {
+        // Get existing tunnel or create new one
+        let creds = match cf.get_or_create_tunnel(&tunnel_name).await {
             Ok(creds) => {
                 tracing::info!(
-                    "Cloudflare tunnel created: {} (id: {})",
+                    "Cloudflare tunnel ready: {} (id: {})",
                     tunnel_name,
                     creds.tunnel_id
                 );
 
-                // Create CNAME record pointing to the tunnel
+                // Ensure CNAME record exists (create if not, ignore if already exists)
                 let tunnel_hostname = format!("{}.cfargotunnel.com", creds.tunnel_id);
-                match cf.create_cname_record(&subdomain, &tunnel_hostname).await {
-                    Ok(record) => {
+                match cf.find_cname_record(&subdomain).await {
+                    Ok(existing) => {
                         tracing::info!(
-                            "CNAME record created: {}.spoq.dev -> {} (id: {})",
+                            "CNAME record already exists: {}.spoq.dev -> {} (id: {})",
                             subdomain,
-                            tunnel_hostname,
-                            record.id
+                            existing.content,
+                            existing.id
                         );
                     }
-                    Err(e) => {
-                        tracing::error!(
-                            "Failed to create CNAME record for {}: {}",
-                            hostname,
-                            e
-                        );
-                        // Clean up the tunnel since we can't route to it
-                        let _ = cf.delete_tunnel(&creds.tunnel_id).await;
-                        return Err(AppError::Internal(format!(
-                            "Failed to create DNS routing for tunnel: {}",
-                            e
-                        )));
+                    Err(_) => {
+                        // CNAME doesn't exist, create it
+                        match cf.create_cname_record(&subdomain, &tunnel_hostname).await {
+                            Ok(record) => {
+                                tracing::info!(
+                                    "CNAME record created: {}.spoq.dev -> {} (id: {})",
+                                    subdomain,
+                                    tunnel_hostname,
+                                    record.id
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to create CNAME record for {}: {}",
+                                    hostname,
+                                    e
+                                );
+                                return Err(AppError::Internal(format!(
+                                    "Failed to create DNS routing for tunnel: {}",
+                                    e
+                                )));
+                            }
+                        }
                     }
                 }
 
                 Some(creds)
             }
             Err(e) => {
-                tracing::error!("Failed to create Cloudflare tunnel: {}", e);
+                tracing::error!("Failed to get/create Cloudflare tunnel: {}", e);
                 return Err(AppError::Internal(format!(
-                    "Failed to create Cloudflare tunnel: {}",
+                    "Failed to setup Cloudflare tunnel: {}",
                     e
                 )));
             }
@@ -307,8 +318,7 @@ pub async fn provision_byovps(
         jwt_secret: &config.jwt_secret,
         owner_id: &user.user_id.to_string(),
         tunnel_id: &creds.tunnel_id,
-        tunnel_secret: &creds.tunnel_secret,
-        account_id: &creds.account_tag,
+        tunnel_token: &creds.token,
     };
     let script_content = generate_post_install_script(&params);
 

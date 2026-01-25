@@ -51,6 +51,8 @@ pub struct TunnelCredentials {
     pub tunnel_secret: String,
     pub account_tag: String,
     pub tunnel_name: String,
+    /// JWT token that cloudflared can use to authenticate (contains embedded secret)
+    pub token: String,
 }
 
 /// Response from Cloudflare Tunnel API
@@ -479,11 +481,15 @@ impl CloudflareService {
                 "No result in response".to_string(),
             ))?;
 
+            // Fetch the token for the newly created tunnel
+            let token = self.get_tunnel_token(&result.id).await?;
+
             Ok(TunnelCredentials {
                 tunnel_id: result.id,
                 tunnel_secret,
                 account_tag: result.account_tag,
                 tunnel_name: result.name,
+                token,
             })
         } else {
             let error_msg = cf_response
@@ -700,5 +706,73 @@ impl CloudflareService {
                 .unwrap_or_else(|| "Unknown error".to_string());
             Err(CloudflareServiceError::ApiError(error_msg))
         }
+    }
+
+    /// Get a token for an existing tunnel
+    /// The token can be used with `cloudflared tunnel run --token <token>`
+    pub async fn get_tunnel_token(&self, tunnel_id: &str) -> Result<String, CloudflareServiceError> {
+        let account_id = self
+            .account_id
+            .as_ref()
+            .ok_or(CloudflareServiceError::AccountIdNotConfigured)?;
+
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/accounts/{}/cfd_tunnel/{}/token",
+            account_id, tunnel_id
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.api_token))
+            .send()
+            .await?;
+
+        let cf_response: CloudflareResponse<String> = response.json().await?;
+
+        if cf_response.success {
+            cf_response.result.ok_or(CloudflareServiceError::ApiError(
+                "No token in response".to_string(),
+            ))
+        } else {
+            let error_msg = cf_response
+                .errors
+                .first()
+                .map(|e| e.message.clone())
+                .unwrap_or_else(|| "Unknown error".to_string());
+            Err(CloudflareServiceError::ApiError(error_msg))
+        }
+    }
+
+    /// Get or create a tunnel by name
+    /// If tunnel exists, fetches its token. If not, creates a new tunnel.
+    /// Returns TunnelCredentials with the token for cloudflared authentication.
+    pub async fn get_or_create_tunnel(&self, name: &str) -> Result<TunnelCredentials, CloudflareServiceError> {
+        let account_id = self
+            .account_id
+            .as_ref()
+            .ok_or(CloudflareServiceError::AccountIdNotConfigured)?;
+
+        // Check if tunnel already exists
+        if let Some(tunnel_id) = self.find_tunnel_by_name(name).await? {
+            tracing::info!("Found existing tunnel '{}' (id: {}), reusing it", name, tunnel_id);
+
+            // Get token for existing tunnel
+            let token = self.get_tunnel_token(&tunnel_id).await?;
+
+            return Ok(TunnelCredentials {
+                tunnel_id,
+                tunnel_secret: String::new(), // Not available for existing tunnels, but token has it embedded
+                account_tag: account_id.clone(),
+                tunnel_name: name.to_string(),
+                token,
+            });
+        }
+
+        // Tunnel doesn't exist, create new one
+        tracing::info!("Creating new tunnel '{}'", name);
+        let creds = self.create_tunnel(name).await?;
+
+        Ok(creds)
     }
 }

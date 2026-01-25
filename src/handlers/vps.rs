@@ -486,14 +486,14 @@ pub async fn provision_vps(
     let script_uuid = Uuid::new_v4();
     let jwt_secret = config.jwt_secret.clone();
 
-    // Create Cloudflare Tunnel for secure ingress (if Cloudflare is configured with account_id)
+    // Get or create Cloudflare Tunnel for secure ingress (if Cloudflare is configured with account_id)
     let tunnel_credentials = if let Some(ref cf) = cloudflare {
         // Use the username as tunnel name for easy identification
         let tunnel_name = format!("spoq-{}", username.to_lowercase());
-        match cf.create_tunnel(&tunnel_name).await {
+        match cf.get_or_create_tunnel(&tunnel_name).await {
             Ok(creds) => {
                 tracing::info!(
-                    "Created Cloudflare Tunnel: {} (id: {})",
+                    "Cloudflare Tunnel ready: {} (id: {})",
                     tunnel_name,
                     creds.tunnel_id
                 );
@@ -503,7 +503,7 @@ pub async fn provision_vps(
                 // Log error but continue - tunnel creation is not blocking
                 // The VPS will still be accessible via IP
                 tracing::warn!(
-                    "Failed to create Cloudflare Tunnel (continuing without tunnel): {}",
+                    "Failed to get/create Cloudflare Tunnel (continuing without tunnel): {}",
                     e
                 );
                 None
@@ -514,9 +514,6 @@ pub async fn provision_vps(
         None
     };
 
-    // Get account_id from config for tunnel credentials
-    let account_id = config.cloudflare_account_id.clone().unwrap_or_default();
-
     // Generate post-install script with tunnel credentials if available
     let script_content = if let Some(ref creds) = tunnel_credentials {
         let params = PostInstallParams {
@@ -526,12 +523,11 @@ pub async fn provision_vps(
             jwt_secret: &jwt_secret,
             owner_id: &user.user_id.to_string(),
             tunnel_id: &creds.tunnel_id,
-            tunnel_secret: &creds.tunnel_secret,
-            account_id: &creds.account_tag,
+            tunnel_token: &creds.token,
         };
         generate_post_install_script(&params)
     } else {
-        // Fallback: generate script without tunnel (uses empty tunnel credentials)
+        // Fallback: generate script without tunnel (uses empty tunnel token)
         let params = PostInstallParams {
             ssh_password: &req.ssh_password,
             hostname: &hostname,
@@ -539,8 +535,7 @@ pub async fn provision_vps(
             jwt_secret: &jwt_secret,
             owner_id: &user.user_id.to_string(),
             tunnel_id: "",
-            tunnel_secret: "",
-            account_id: &account_id,
+            tunnel_token: "",
         };
         generate_post_install_script(&params)
     };
@@ -789,13 +784,13 @@ async fn setup_tunnel_and_dns(
     // Check if tunnel already exists for this VPS
     let mut tunnel_id = vps.tunnel_id.clone();
 
-    // If no tunnel exists, try to create one
+    // If no tunnel exists, try to get or create one
     if tunnel_id.is_none() {
         let tunnel_name = format!("spoq-{}", subdomain);
-        match cf.create_tunnel(&tunnel_name).await {
+        match cf.get_or_create_tunnel(&tunnel_name).await {
             Ok(creds) => {
                 tracing::info!(
-                    "Created Cloudflare Tunnel for VPS {}: {} (id: {})",
+                    "Cloudflare Tunnel ready for VPS {}: {} (id: {})",
                     vps.id,
                     tunnel_name,
                     creds.tunnel_id
@@ -815,7 +810,7 @@ async fn setup_tunnel_and_dns(
             }
             Err(e) => {
                 tracing::warn!(
-                    "Failed to create Cloudflare Tunnel for VPS {} (will use A record): {}",
+                    "Failed to get/create Cloudflare Tunnel for VPS {} (will use A record): {}",
                     vps.id,
                     e
                 );
