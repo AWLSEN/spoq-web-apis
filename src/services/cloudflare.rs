@@ -495,6 +495,55 @@ impl CloudflareService {
         }
     }
 
+    /// Find a Cloudflare Tunnel by name
+    /// Returns the tunnel ID if found, None if not found
+    pub async fn find_tunnel_by_name(&self, name: &str) -> Result<Option<String>, CloudflareServiceError> {
+        let account_id = self
+            .account_id
+            .as_ref()
+            .ok_or(CloudflareServiceError::AccountIdNotConfigured)?;
+
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/accounts/{}/cfd_tunnel?name={}",
+            account_id,
+            urlencoding::encode(name)
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.api_token))
+            .send()
+            .await?;
+
+        #[derive(Debug, Deserialize)]
+        struct TunnelListItem {
+            id: String,
+            name: String,
+        }
+
+        let cf_response: CloudflareResponse<Vec<TunnelListItem>> = response.json().await?;
+
+        if cf_response.success {
+            if let Some(tunnels) = cf_response.result {
+                // Find exact name match (API might return partial matches)
+                for tunnel in tunnels {
+                    if tunnel.name == name {
+                        return Ok(Some(tunnel.id));
+                    }
+                }
+            }
+            Ok(None)
+        } else {
+            let error_msg = cf_response
+                .errors
+                .first()
+                .map(|e| e.message.clone())
+                .unwrap_or_else(|| "Unknown error".to_string());
+            Err(CloudflareServiceError::ApiError(error_msg))
+        }
+    }
+
     /// Delete a Cloudflare Tunnel by ID
     pub async fn delete_tunnel(&self, tunnel_id: &str) -> Result<(), CloudflareServiceError> {
         let account_id = self
