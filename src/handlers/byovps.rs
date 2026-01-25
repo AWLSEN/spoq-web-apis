@@ -202,6 +202,35 @@ pub async fn provision_byovps(
     let hostname = format!("{}.spoq.dev", username.to_lowercase());
     let jwt_secret = config.jwt_secret.clone();
 
+    // Health check first: If VPS is already healthy from a previous attempt, skip provisioning
+    let health_url = format!("https://{}/health", hostname);
+    tracing::info!("Checking if VPS is already healthy at {}", health_url);
+
+    let http_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+
+    if let Ok(response) = http_client.get(&health_url).send().await {
+        if response.status().is_success() {
+            tracing::info!(
+                "VPS already healthy at {} - skipping provisioning",
+                health_url
+            );
+
+            // Return success so CLI can call /api/vps/confirm
+            let response = ByovpsPendingResponse {
+                hostname,
+                ip_address: req.vps_ip.clone(),
+                jwt_secret,
+                ssh_password: req.ssh_password.clone(),
+                message: "VPS is already healthy. Confirming setup.".to_string(),
+            };
+
+            return Ok(HttpResponse::Ok().json(response));
+        }
+    }
+
     tracing::info!(
         "BYOVPS provisioning started: hostname={}, ip={}",
         hostname,
@@ -212,27 +241,6 @@ pub async fn provision_byovps(
     let tunnel_credentials = if let Some(cf) = &cloudflare {
         let subdomain = username.to_lowercase();
         let tunnel_name = format!("spoq-{}", subdomain);
-
-        // Check if tunnel already exists and delete it (cleanup from previous failed attempt)
-        if let Ok(Some(existing_tunnel_id)) = cf.find_tunnel_by_name(&tunnel_name).await {
-            tracing::info!(
-                "Found existing tunnel '{}' (id: {}), deleting for clean retry",
-                tunnel_name,
-                existing_tunnel_id
-            );
-
-            // Delete existing CNAME record if it exists
-            if let Ok(existing_cname) = cf.find_cname_record(&subdomain).await {
-                tracing::info!("Deleting existing CNAME record: {}", existing_cname.id);
-                let _ = cf.delete_cname_record(&existing_cname.id).await;
-            }
-
-            // Delete the existing tunnel
-            if let Err(e) = cf.delete_tunnel(&existing_tunnel_id).await {
-                tracing::warn!("Failed to delete existing tunnel: {}", e);
-                // Continue anyway - tunnel creation will fail if it still exists
-            }
-        }
 
         // Create Cloudflare Tunnel
         let creds = match cf.create_tunnel(&tunnel_name).await {

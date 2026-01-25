@@ -442,6 +442,41 @@ pub async fn provision_vps(
     // Generate hostname
     let hostname = format!("{}.spoq.dev", username.to_lowercase());
 
+    // Health check first: If VPS is already healthy from a previous attempt, skip provisioning
+    let health_url = format!("https://{}/health", hostname);
+    tracing::info!("Checking if VPS is already healthy at {}", health_url);
+
+    let http_client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+
+    if let Ok(response) = http_client.get(&health_url).send().await {
+        if response.status().is_success() {
+            tracing::info!(
+                "VPS already healthy at {} - skipping provisioning",
+                health_url
+            );
+
+            // Return pending response so CLI can call /api/vps/confirm
+            let response = ProvisionPendingResponse {
+                hostname,
+                ip_address: None, // Will be resolved via DNS
+                provider_instance_id: 0, // Placeholder - will be updated on confirm
+                provider_order_id: None,
+                plan_id: req.plan_id.clone().unwrap_or_else(|| config.default_vps_plan.clone()),
+                data_center_id: req.data_center_id.unwrap_or(config.default_vps_datacenter),
+                template_id: config.default_vps_template,
+                jwt_secret: config.jwt_secret.clone(),
+                ssh_password: req.ssh_password.clone(),
+                message: "VPS is already healthy. Confirming setup.".to_string(),
+                tunnel_id: None,
+            };
+
+            return Ok(HttpResponse::Ok().json(response));
+        }
+    }
+
     // Get plan and datacenter settings
     let plan_id = req.plan_id.clone().unwrap_or_else(|| config.default_vps_plan.clone());
     let data_center_id = req.data_center_id.unwrap_or(config.default_vps_datacenter);
