@@ -67,6 +67,8 @@ pub struct TokenResponse {
     pub access_token: String,
     /// The refresh token
     pub refresh_token: String,
+    /// Token type (always "Bearer" per OAuth2)
+    pub token_type: String,
     /// Token expiration as Unix timestamp
     pub expires_at: i64,
     /// The user's ID
@@ -571,6 +573,7 @@ pub async fn refresh_token(
     HttpResponse::Ok().json(TokenResponse {
         access_token,
         refresh_token: new_refresh_token,
+        token_type: "Bearer".to_string(),
         expires_at: access_token_expires_at,
         user_id: user_id.to_string(),
     })
@@ -1091,6 +1094,7 @@ pub async fn device_token(
             HttpResponse::Ok().json(TokenResponse {
                 access_token,
                 refresh_token,
+                token_type: "Bearer".to_string(),
                 expires_at: access_token_expires_at,
                 user_id: user_id.to_string(),
             })
@@ -1188,12 +1192,14 @@ mod tests {
         let resp = TokenResponse {
             access_token: "jwt_token".to_string(),
             refresh_token: "spoq_refresh".to_string(),
+            token_type: "Bearer".to_string(),
             expires_at: 1700000000,
             user_id: "user-123".to_string(),
         };
         let json = serde_json::to_string(&resp).expect("Failed to serialize");
         assert!(json.contains("\"access_token\":\"jwt_token\""));
         assert!(json.contains("\"refresh_token\":\"spoq_refresh\""));
+        assert!(json.contains("\"token_type\":\"Bearer\""));
         assert!(json.contains("\"expires_at\":1700000000"));
         assert!(json.contains("\"user_id\":\"user-123\""));
     }
