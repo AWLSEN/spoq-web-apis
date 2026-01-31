@@ -620,6 +620,19 @@ async fn run_provisioning_worker(
         }
     };
 
+    // Clean up any terminated/failed records for this user before inserting
+    // (same logic as confirm_vps endpoint)
+    if let Err(e) = sqlx::query(
+        "DELETE FROM user_vps WHERE user_id = $1 AND status IN ('failed', 'terminated')",
+    )
+    .bind(params.user_id)
+    .execute(pool.as_ref())
+    .await
+    {
+        tracing::warn!("Failed to clean up old VPS records: {}", e);
+        // Continue anyway - the INSERT might still work
+    }
+
     let vps_id = Uuid::new_v4();
     let result = sqlx::query(
         r#"
