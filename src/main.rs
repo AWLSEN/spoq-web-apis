@@ -17,7 +17,7 @@ use spoq_web_apis::handlers::{
     confirm_vps, get_vps_precheck, get_vps_status, list_datacenters, list_plans,
     list_subscription_plans, provision_vps, reset_password, restart_vps, start_vps, stop_vps,
     // BYOVPS handlers
-    provision_byovps,
+    provision_byovps, replace_byovps,
     // Payment handlers
     create_checkout_session, create_portal_session, get_session_status, payment_cancel,
     payment_success, portal_return,
@@ -175,7 +175,8 @@ async fn main() -> std::io::Result<()> {
         // Add BYOVPS routes (always available - doesn't require Hostinger)
         app = app.service(
             web::scope("/api/byovps")
-                .route("/provision", web::post().to(provision_byovps)),
+                .route("/provision", web::post().to(provision_byovps))
+                .route("/replace", web::post().to(replace_byovps)),
         );
 
         // TEMPORARY: Admin routes for database cleanup (NO AUTHENTICATION!)

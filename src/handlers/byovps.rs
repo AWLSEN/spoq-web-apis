@@ -399,6 +399,338 @@ pub async fn provision_byovps(
     Ok(HttpResponse::Ok().json(response))
 }
 
+/// Replace an existing BYOVPS with a new one for the authenticated user
+///
+/// POST /api/byovps/replace
+///
+/// This endpoint atomically:
+/// 1. Validates the input (IP, username, password)
+/// 2. Terminates any existing active VPS (including DNS cleanup)
+/// 3. Provisions the new VPS using the same flow as /provision
+///
+/// Unlike /provision which returns 400 if user has active VPS, /replace
+/// handles the termination automatically.
+pub async fn replace_byovps(
+    user: AuthenticatedUser,
+    pool: web::Data<PgPool>,
+    config: web::Data<Config>,
+    cloudflare: Option<web::Data<CloudflareService>>,
+    req: web::Json<ProvisionByovpsRequest>,
+) -> AppResult<HttpResponse> {
+    // Validate IP address format
+    if !is_valid_ip(&req.vps_ip) {
+        return Err(AppError::BadRequest(
+            "Invalid VPS IP address format. Must be a valid IPv4 or IPv6 address.".to_string(),
+        ));
+    }
+
+    // Validate username is not empty
+    if req.ssh_username.trim().is_empty() {
+        return Err(AppError::BadRequest(
+            "SSH username cannot be empty".to_string(),
+        ));
+    }
+
+    // Validate password is not empty
+    if req.ssh_password.is_empty() {
+        return Err(AppError::BadRequest(
+            "SSH password cannot be empty".to_string(),
+        ));
+    }
+
+    // Validate password length (for security)
+    if req.ssh_password.len() < 8 {
+        return Err(AppError::BadRequest(
+            "SSH password must be at least 8 characters".to_string(),
+        ));
+    }
+
+    // BYOVPS requires root access for proper system configuration
+    if req.ssh_username != "root" {
+        return Err(AppError::BadRequest(
+            "BYOVPS requires SSH access as 'root' user for proper system configuration.".to_string(),
+        ));
+    }
+
+    // Check if user has an existing active VPS - if so, terminate it first
+    let existing: Option<UserVps> = sqlx::query_as(
+        "SELECT * FROM user_vps WHERE user_id = $1 AND status NOT IN ('terminated', 'failed')",
+    )
+    .bind(user.user_id)
+    .fetch_optional(pool.get_ref())
+    .await?;
+
+    if let Some(old_vps) = existing {
+        tracing::info!(
+            "Terminating existing VPS for user {} before replacement: hostname={}, id={}",
+            user.user_id,
+            &old_vps.hostname,
+            old_vps.id
+        );
+
+        // Clean up old Cloudflare tunnel if it exists
+        if let (Some(cf), Some(tunnel_id)) = (&cloudflare, &old_vps.tunnel_id) {
+            // Get username for tunnel name
+            let username: Option<String> =
+                sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
+                    .bind(user.user_id)
+                    .fetch_optional(pool.get_ref())
+                    .await?;
+
+            if let Some(username) = username {
+                let subdomain = username.to_lowercase();
+
+                // Delete CNAME record if exists
+                if let Ok(record) = cf.find_cname_record(&subdomain).await {
+                    if let Err(e) = cf.delete_dns_record(&record.id).await {
+                        tracing::warn!("Failed to delete old CNAME record: {}", e);
+                    } else {
+                        tracing::info!("Deleted old CNAME record for {}", subdomain);
+                    }
+                }
+
+                // Delete the tunnel
+                if let Err(e) = cf.delete_tunnel(tunnel_id).await {
+                    tracing::warn!("Failed to delete old Cloudflare tunnel: {}", e);
+                } else {
+                    tracing::info!("Deleted old Cloudflare tunnel: {}", tunnel_id);
+                }
+            }
+        }
+
+        // Mark old VPS as terminated
+        sqlx::query("UPDATE user_vps SET status = 'terminated', updated_at = NOW() WHERE id = $1")
+            .bind(old_vps.id)
+            .execute(pool.get_ref())
+            .await?;
+
+        tracing::info!("Old VPS marked as terminated: id={}", old_vps.id);
+    }
+
+    // Clean up any stale failed or terminated VPS records for this user
+    let deleted = sqlx::query(
+        "DELETE FROM user_vps WHERE user_id = $1 AND status IN ('failed', 'terminated')",
+    )
+    .bind(user.user_id)
+    .execute(pool.get_ref())
+    .await?;
+
+    if deleted.rows_affected() > 0 {
+        tracing::info!(
+            "Cleaned up {} stale VPS record(s) for user {}",
+            deleted.rows_affected(),
+            user.user_id
+        );
+    }
+
+    // Get the user's username for hostname generation
+    let username: Option<String> =
+        sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
+            .bind(user.user_id)
+            .fetch_optional(pool.get_ref())
+            .await?;
+
+    let username = username
+        .ok_or_else(|| AppError::Internal("User not found in database".to_string()))?;
+
+    // Generate hostname: username.spoq.dev
+    let hostname = format!("{}.spoq.dev", username.to_lowercase());
+    let jwt_secret = config.jwt_secret.clone();
+
+    // Health check first: If VPS is already healthy from a previous attempt, skip provisioning
+    let health_url = format!("https://{}/health", hostname);
+    tracing::info!("Checking if VPS is already healthy at {}", health_url);
+
+    let http_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+
+    if let Ok(response) = http_client.get(&health_url).send().await {
+        if response.status().is_success() {
+            tracing::info!(
+                "VPS already healthy at {} - skipping provisioning",
+                health_url
+            );
+
+            let response = ByovpsPendingResponse {
+                hostname,
+                ip_address: req.vps_ip.clone(),
+                jwt_secret,
+                ssh_password: req.ssh_password.clone(),
+                message: "VPS is already healthy. Confirming setup.".to_string(),
+            };
+
+            return Ok(HttpResponse::Ok().json(response));
+        }
+    }
+
+    tracing::info!(
+        "BYOVPS replacement started: hostname={}, ip={}",
+        hostname,
+        req.vps_ip
+    );
+
+    // Get or create Cloudflare Tunnel and DNS records
+    let tunnel_credentials = if let Some(cf) = &cloudflare {
+        let subdomain = username.to_lowercase();
+        let tunnel_name = format!("spoq-{}", subdomain);
+
+        // Get existing tunnel or create new one
+        let creds = match cf.get_or_create_tunnel(&tunnel_name).await {
+            Ok(creds) => {
+                tracing::info!(
+                    "Cloudflare tunnel ready: {} (id: {})",
+                    tunnel_name,
+                    creds.tunnel_id
+                );
+
+                // Ensure CNAME record exists
+                let tunnel_hostname = format!("{}.cfargotunnel.com", creds.tunnel_id);
+                match cf.find_cname_record(&subdomain).await {
+                    Ok(existing) => {
+                        tracing::info!(
+                            "CNAME record already exists: {}.spoq.dev -> {} (id: {})",
+                            subdomain,
+                            existing.content,
+                            existing.id
+                        );
+                    }
+                    Err(_) => {
+                        match cf.create_cname_record(&subdomain, &creds.tunnel_id).await {
+                            Ok(record) => {
+                                tracing::info!(
+                                    "CNAME record created: {}.spoq.dev -> {} (id: {})",
+                                    subdomain,
+                                    tunnel_hostname,
+                                    record.id
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to create CNAME record for {}: {}",
+                                    hostname,
+                                    e
+                                );
+                                return Err(AppError::Internal(format!(
+                                    "Failed to create DNS routing for tunnel: {}",
+                                    e
+                                )));
+                            }
+                        }
+                    }
+                }
+
+                Some(creds)
+            }
+            Err(e) => {
+                tracing::error!("Failed to get/create Cloudflare tunnel: {}", e);
+                return Err(AppError::Internal(format!(
+                    "Failed to setup Cloudflare tunnel: {}",
+                    e
+                )));
+            }
+        };
+
+        creds
+    } else {
+        tracing::error!("Cloudflare not configured - cannot provision BYOVPS without tunnel");
+        return Err(AppError::Internal(
+            "Cloudflare tunnel configuration is required for BYOVPS".to_string(),
+        ));
+    };
+
+    // Get tunnel credentials (we know it's Some at this point)
+    let creds = tunnel_credentials.unwrap();
+
+    // Generate the post-install script with tunnel configuration
+    let params = PostInstallParams {
+        ssh_password: &req.ssh_password,
+        hostname: &hostname,
+        conductor_url: "https://download.spoq.dev/conductor",
+        jwt_secret: &config.jwt_secret,
+        owner_id: &user.user_id.to_string(),
+        tunnel_id: &creds.tunnel_id,
+        tunnel_token: &creds.token,
+    };
+    let script_content = generate_post_install_script(&params);
+
+    // SSH into the VPS and execute the script
+    let ssh_config = SshConfig::new(&req.vps_ip, &req.ssh_username, &req.ssh_password)
+        .with_timeout(60)
+        .with_exec_timeout(600);
+
+    // Execute the install script via SSH
+    let ssh_status = match SshInstallerService::connect(ssh_config) {
+        Ok(ssh) => {
+            tracing::info!("SSH connection established to {}", req.vps_ip);
+
+            match ssh.execute_script(&script_content) {
+                Ok(result) => {
+                    tracing::info!(
+                        "BYOVPS script completed on {} with exit code {}",
+                        req.vps_ip,
+                        result.exit_code
+                    );
+                    if result.exit_code == 0 {
+                        "success"
+                    } else {
+                        "script_failed"
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to execute script on {}: {}", req.vps_ip, e);
+                    "script_error"
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!("Failed to SSH into {}: {}", req.vps_ip, e);
+            "ssh_failed"
+        }
+    };
+
+    // Build response message based on SSH result
+    let message = match ssh_status {
+        "success" => format!(
+            "SSH script executed successfully. Conductor is starting on {}. \
+             The CLI will poll https://{}/health to verify readiness.",
+            req.vps_ip, hostname
+        ),
+        "script_failed" => format!(
+            "SSH script completed with non-zero exit code on {}. \
+             The CLI will poll https://{}/health to verify readiness.",
+            req.vps_ip, hostname
+        ),
+        "script_error" => format!(
+            "SSH script execution error on {}. \
+             The CLI will poll https://{}/health to verify readiness.",
+            req.vps_ip, hostname
+        ),
+        _ => format!(
+            "SSH connection failed to {}. Please verify your credentials and try again.",
+            req.vps_ip
+        ),
+    };
+
+    tracing::info!(
+        "BYOVPS replace returning: hostname={}, ip={}, ssh_status={}",
+        hostname,
+        req.vps_ip,
+        ssh_status
+    );
+
+    let response = ByovpsPendingResponse {
+        hostname,
+        ip_address: req.vps_ip.clone(),
+        jwt_secret,
+        ssh_password: req.ssh_password.clone(),
+        message,
+    };
+
+    Ok(HttpResponse::Ok().json(response))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
