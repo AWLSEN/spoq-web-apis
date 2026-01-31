@@ -9,6 +9,7 @@ use thiserror::Error;
 use crate::config::ConfigError;
 use crate::services::github::GithubError;
 use crate::services::hostinger::HostingerError;
+use crate::services::operations::OperationError;
 
 /// Unified application error type.
 ///
@@ -56,9 +57,23 @@ pub enum AppError {
     #[error("Conflict: {0}")]
     Conflict(String),
 
+    /// Too many requests (rate limiting)
+    #[error("Too many requests: {0}")]
+    TooManyRequests(String),
+
     /// Internal server errors
     #[error("Internal server error: {0}")]
     Internal(String),
+}
+
+impl From<OperationError> for AppError {
+    fn from(err: OperationError) -> Self {
+        match err {
+            OperationError::TooManyOperations => {
+                AppError::TooManyRequests("Too many active operations. Please wait for existing operations to complete.".to_string())
+            }
+        }
+    }
 }
 
 impl ResponseError for AppError {
@@ -74,6 +89,7 @@ impl ResponseError for AppError {
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
             AppError::Conflict(_) => StatusCode::CONFLICT,
+            AppError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
             AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -94,6 +110,7 @@ impl ResponseError for AppError {
             AppError::BadRequest(msg) => msg.clone(),
             AppError::NotFound(msg) => msg.clone(),
             AppError::Conflict(msg) => msg.clone(),
+            AppError::TooManyRequests(msg) => msg.clone(),
         };
 
         let body = serde_json::json!({

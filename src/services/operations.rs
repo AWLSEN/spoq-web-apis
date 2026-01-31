@@ -12,8 +12,22 @@ use uuid::Uuid;
 /// How long to keep completed operations before cleanup (5 minutes)
 const OPERATION_TTL: Duration = Duration::from_secs(300);
 
+/// Maximum age for pending/running operations before force cleanup (1 hour)
+/// This prevents memory leaks from stuck or abandoned operations.
+const MAX_PENDING_AGE: Duration = Duration::from_secs(3600);
+
+/// Maximum number of active operations per user
+const MAX_OPS_PER_USER: usize = 5;
+
 /// How often to run cleanup (1 minute)
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Error type for operation creation
+#[derive(Debug, Clone)]
+pub enum OperationError {
+    /// User has too many active operations
+    TooManyOperations,
+}
 
 /// Operation status
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -123,12 +137,34 @@ impl OperationStore {
     }
 
     /// Create a new operation and return its ID
+    ///
+    /// Returns error if user has too many active operations.
     pub fn create(
         &self,
         user_id: Uuid,
         operation_type: &str,
         steps: Vec<&str>,
-    ) -> Uuid {
+    ) -> Result<Uuid, OperationError> {
+        // Check per-user operation limit
+        let user_active_ops = self
+            .operations
+            .iter()
+            .filter(|entry| {
+                let op = entry.value();
+                op.user_id == user_id
+                    && matches!(op.status, OperationStatus::Pending | OperationStatus::Running)
+            })
+            .count();
+
+        if user_active_ops >= MAX_OPS_PER_USER {
+            tracing::warn!(
+                "User {} has {} active operations, rejecting new operation",
+                user_id,
+                user_active_ops
+            );
+            return Err(OperationError::TooManyOperations);
+        }
+
         let id = Uuid::new_v4();
         let operation = Operation {
             id,
@@ -151,7 +187,7 @@ impl OperationStore {
         };
         self.operations.insert(id, operation);
         tracing::info!("Operation created: {} ({})", id, operation_type);
-        id
+        Ok(id)
     }
 
     /// Get operation by ID (only if user matches)
@@ -223,12 +259,37 @@ impl OperationStore {
     /// Cleanup expired operations
     fn cleanup(ops: &DashMap<Uuid, Operation>) {
         let now = Instant::now();
-        ops.retain(|_, op| {
-            // Keep if not completed or completed less than TTL ago
+        let before_count = ops.len();
+
+        ops.retain(|id, op| {
             match op.completed_at {
-                None => true,
-                Some(completed) => now.duration_since(completed) < OPERATION_TTL,
+                // Completed operations: keep for OPERATION_TTL
+                Some(completed) => {
+                    let keep = now.duration_since(completed) < OPERATION_TTL;
+                    if !keep {
+                        tracing::debug!("Cleaning up completed operation {}", id);
+                    }
+                    keep
+                }
+                // Pending/Running operations: keep for MAX_PENDING_AGE
+                None => {
+                    let keep = now.duration_since(op.created_at) < MAX_PENDING_AGE;
+                    if !keep {
+                        tracing::warn!(
+                            "Cleaning up stuck operation {} (status: {:?}, age: {:?})",
+                            id,
+                            op.status,
+                            now.duration_since(op.created_at)
+                        );
+                    }
+                    keep
+                }
             }
         });
+
+        let removed = before_count.saturating_sub(ops.len());
+        if removed > 0 {
+            tracing::info!("Operation cleanup removed {} operations", removed);
+        }
     }
 }

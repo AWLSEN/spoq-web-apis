@@ -951,7 +951,7 @@ pub async fn replace_byovps(
             "Wait for conductor",
             "Create VPS record",
         ],
-    );
+    )?;
 
     // Mark first step complete (validation done above)
     ops.complete_step(operation_id, 0);
