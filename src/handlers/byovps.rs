@@ -352,8 +352,10 @@ pub async fn provision_byovps(
         ));
     };
 
-    // Get tunnel credentials (we know it's Some at this point)
-    let creds = tunnel_credentials.unwrap();
+    // Get tunnel credentials (required for BYOVPS)
+    let creds = tunnel_credentials.ok_or_else(|| {
+        AppError::Internal("Tunnel credentials missing after setup".to_string())
+    })?;
 
     // Generate the post-install script with tunnel configuration
     let params = PostInstallParams {
@@ -937,8 +939,10 @@ pub async fn replace_byovps(
         ));
     };
 
-    // Get tunnel credentials (we know it's Some at this point)
-    let creds = tunnel_credentials.unwrap();
+    // Get tunnel credentials (required for BYOVPS)
+    let creds = tunnel_credentials.ok_or_else(|| {
+        AppError::Internal("Tunnel credentials missing after setup".to_string())
+    })?;
 
     // Create async operation for tracking
     let operation_id = ops.create(
