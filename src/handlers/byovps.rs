@@ -507,21 +507,9 @@ pub async fn replace_byovps(
         tracing::info!("Old VPS marked as terminated: id={}", old_vps.id);
     }
 
-    // Clean up any stale failed or terminated VPS records for this user
-    let deleted = sqlx::query(
-        "DELETE FROM user_vps WHERE user_id = $1 AND status IN ('failed', 'terminated')",
-    )
-    .bind(user.user_id)
-    .execute(pool.get_ref())
-    .await?;
-
-    if deleted.rows_affected() > 0 {
-        tracing::info!(
-            "Cleaned up {} stale VPS record(s) for user {}",
-            deleted.rows_affected(),
-            user.user_id
-        );
-    }
+    // Note: terminated/failed records are cleaned up by confirm_vps, not here.
+    // This avoids a window where no record exists if the TUI crashes between
+    // replace and confirm.
 
     // Get the user's username for hostname generation
     let username: Option<String> =
