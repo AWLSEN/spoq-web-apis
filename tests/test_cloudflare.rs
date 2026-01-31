@@ -138,12 +138,14 @@ fn test_tunnel_credentials_struct() {
         tunnel_secret: "c2VjcmV0".to_string(),
         account_tag: "account456".to_string(),
         tunnel_name: "my-tunnel".to_string(),
+        token: "eyJ0IjoiYWJjMTIzIiwicyI6ImMyVmpjbVYwIn0=".to_string(),
     };
 
     assert_eq!(creds.tunnel_id, "abc123");
     assert_eq!(creds.tunnel_secret, "c2VjcmV0");
     assert_eq!(creds.account_tag, "account456");
     assert_eq!(creds.tunnel_name, "my-tunnel");
+    assert_eq!(creds.token, "eyJ0IjoiYWJjMTIzIiwicyI6ImMyVmpjbVYwIn0=");
 }
 
 /// Test TunnelCredentials serialization/deserialization
@@ -154,6 +156,7 @@ fn test_tunnel_credentials_serde() {
         tunnel_secret: "base64secret".to_string(),
         account_tag: "acct-456".to_string(),
         tunnel_name: "test-tunnel".to_string(),
+        token: "eyJ0IjoidHVubmVsLTEyMyIsInMiOiJiYXNlNjRzZWNyZXQifQ==".to_string(),
     };
 
     // Serialize to JSON
@@ -169,6 +172,7 @@ fn test_tunnel_credentials_serde() {
     assert_eq!(parsed.tunnel_secret, creds.tunnel_secret);
     assert_eq!(parsed.account_tag, creds.account_tag);
     assert_eq!(parsed.tunnel_name, creds.tunnel_name);
+    assert_eq!(parsed.token, creds.token);
 }
 
 /// Test that tunnel CNAME target is correctly formatted

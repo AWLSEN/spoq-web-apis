@@ -1,21 +1,36 @@
 //! BYOVPS (Bring Your Own VPS) handler for provisioning user-provided VPS instances.
 //!
-//! This module provides the following endpoint:
+//! This module provides the following endpoints:
 //! - `POST /api/byovps/provision` - Provision a user's own VPS with Spoq services
+//! - `POST /api/byovps/replace` - Replace existing VPS (async, returns operation ID)
+//! - `GET /api/byovps/operations/{id}` - Get operation status
 //!
 //! Unlike the managed VPS provisioning (via Hostinger), BYOVPS allows users to connect
 //! their own VPS servers. We SSH into their server and run the setup script remotely.
+//!
+//! The replace endpoint uses async provisioning to avoid Cloudflare timeouts:
+//! 1. Validates input and creates Cloudflare tunnel (fast, ~5s)
+//! 2. Returns operation ID immediately
+//! 3. SSH script execution runs in background
+//! 4. Background worker auto-confirms VPS when healthy
 
 use actix_web::{web, HttpResponse};
+use argon2::{
+    password_hash::{rand_core::OsRng, PasswordHasher, SaltString},
+    Argon2,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::config::Config;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthenticatedUser;
-use crate::services::hostinger::{generate_post_install_script, PostInstallParams};
 use crate::models::UserVps;
 use crate::services::cloudflare::CloudflareService;
+use crate::services::hostinger::{generate_post_install_script, PostInstallParams};
+use crate::services::operations::{OperationResult, OperationStatus, OperationStore};
 use crate::services::ssh_installer::{SshConfig, SshInstallerService};
 
 /// Request to provision a BYOVPS (Bring Your Own VPS)
@@ -42,6 +57,33 @@ pub struct ByovpsPendingResponse {
     pub ssh_password: String,
     /// Human-readable message
     pub message: String,
+}
+
+/// Response for async BYOVPS operations (replace)
+#[derive(Debug, Serialize)]
+pub struct ByovpsAsyncResponse {
+    /// Operation ID for polling status
+    pub operation_id: Uuid,
+    /// Hostname that will be assigned (username.spoq.dev)
+    pub hostname: String,
+    /// IP address of the VPS
+    pub ip_address: String,
+    /// Human-readable message
+    pub message: String,
+}
+
+/// Parameters for background provisioning worker
+#[derive(Clone)]
+struct ProvisioningParams {
+    operation_id: Uuid,
+    user_id: Uuid,
+    vps_ip: String,
+    ssh_username: String,
+    ssh_password: String,
+    hostname: String,
+    jwt_secret: String,
+    tunnel_id: String,
+    tunnel_token: String,
 }
 
 /// Validate an IPv4 address format
@@ -202,8 +244,9 @@ pub async fn provision_byovps(
     let hostname = format!("{}.spoq.dev", username.to_lowercase());
     let jwt_secret = config.jwt_secret.clone();
 
-    // Health check first: If VPS is already healthy from a previous attempt, skip provisioning
-    let health_url = format!("https://{}/health", hostname);
+    // Health check at the IP directly (not hostname, which may still point to an old VPS via tunnel).
+    // Use direct HTTP to port 8000 since the machine won't have a TLS cert yet.
+    let health_url = format!("http://{}:8000/health", req.vps_ip);
     tracing::info!("Checking if VPS is already healthy at {}", health_url);
 
     let http_client = reqwest::Client::builder()
@@ -357,37 +400,62 @@ pub async fn provision_byovps(
         }
     };
 
-    // Build response message based on SSH result
-    let message = match ssh_status {
-        "success" => format!(
-            "SSH script executed successfully. Conductor is starting on {}. \
-             The CLI will poll https://{}/health to verify readiness.",
-            req.vps_ip, hostname
-        ),
-        "script_failed" => format!(
-            "SSH script completed with non-zero exit code on {}. \
-             The CLI will poll https://{}/health to verify readiness.",
-            req.vps_ip, hostname
-        ),
-        "script_error" => format!(
-            "SSH script execution error on {}. \
-             The CLI will poll https://{}/health to verify readiness.",
-            req.vps_ip, hostname
-        ),
-        _ => format!(
-            "SSH connection failed to {}. Please verify your credentials and try again.",
+    // Return error for SSH failures — conductor was never installed
+    match ssh_status {
+        "ssh_failed" => {
+            tracing::error!(
+                "BYOVPS provision failed: SSH connection to {} failed. Conductor was NOT installed.",
+                req.vps_ip
+            );
+            return Err(AppError::BadRequest(format!(
+                "SSH connection failed to {}. Ensure the IP is reachable from the internet, \
+                 port 22 is open, and credentials are correct. \
+                 Private/Tailscale IPs are not reachable from our servers.",
+                req.vps_ip
+            )));
+        }
+        "script_error" => {
+            tracing::error!(
+                "BYOVPS provision failed: script execution error on {}",
+                req.vps_ip
+            );
+            return Err(AppError::Internal(format!(
+                "Setup script failed to execute on {}. Check server logs for details.",
+                req.vps_ip
+            )));
+        }
+        "script_failed" => {
+            tracing::warn!(
+                "BYOVPS provision: script exited non-zero on {} — conductor may still start",
+                req.vps_ip
+            );
+            // Non-zero exit is not fatal — conductor might still be starting.
+            // Fall through to return success and let TUI health-check.
+        }
+        _ => {
+            // "success" — normal path
+        }
+    }
+
+    let message = if ssh_status == "success" {
+        format!(
+            "SSH script executed successfully. Conductor is starting on {}.",
             req.vps_ip
-        ),
+        )
+    } else {
+        format!(
+            "Setup script completed with warnings on {}. Conductor may still start.",
+            req.vps_ip
+        )
     };
 
     tracing::info!(
-        "BYOVPS provision returning immediately: hostname={}, ip={}, ssh_status={}",
+        "BYOVPS provision returning: hostname={}, ip={}, ssh_status={}",
         hostname,
         req.vps_ip,
         ssh_status
     );
 
-    // Return immediately with pending status - CLI will poll for health
     let response = ByovpsPendingResponse {
         hostname,
         ip_address: req.vps_ip.clone(),
@@ -399,22 +467,231 @@ pub async fn provision_byovps(
     Ok(HttpResponse::Ok().json(response))
 }
 
+/// Get the status of an async BYOVPS operation
+///
+/// GET /api/byovps/operations/{id}
+///
+/// Returns the current status of an async provisioning operation.
+/// Poll this endpoint until status is "completed" or "failed".
+pub async fn get_operation(
+    user: AuthenticatedUser,
+    ops: web::Data<OperationStore>,
+    path: web::Path<Uuid>,
+) -> AppResult<HttpResponse> {
+    let operation_id = path.into_inner();
+
+    match ops.get(operation_id, user.user_id) {
+        Some(op) => Ok(HttpResponse::Ok().json(op)),
+        None => Err(AppError::NotFound(format!(
+            "Operation {} not found",
+            operation_id
+        ))),
+    }
+}
+
+/// Background worker that executes SSH provisioning and auto-confirms VPS
+async fn run_provisioning_worker(
+    params: ProvisioningParams,
+    ops: Arc<OperationStore>,
+    pool: Arc<PgPool>,
+    _config: Arc<Config>,
+) {
+    let op_id = params.operation_id;
+
+    // Step 1: Mark as running
+    ops.set_status(op_id, OperationStatus::Running, "Connecting to VPS...");
+    ops.complete_step(op_id, 0);
+
+    // Step 2: SSH and execute script
+    ops.set_progress(op_id, 20, "Establishing SSH connection...");
+
+    let ssh_config = SshConfig::new(&params.vps_ip, &params.ssh_username, &params.ssh_password)
+        .with_timeout(60)
+        .with_exec_timeout(600);
+
+    let script_params = PostInstallParams {
+        ssh_password: &params.ssh_password,
+        hostname: &params.hostname,
+        conductor_url: "https://download.spoq.dev/conductor",
+        jwt_secret: &params.jwt_secret,
+        owner_id: &params.user_id.to_string(),
+        tunnel_id: &params.tunnel_id,
+        tunnel_token: &params.tunnel_token,
+    };
+    let script_content = generate_post_install_script(&script_params);
+
+    let ssh_result = match SshInstallerService::connect(ssh_config) {
+        Ok(ssh) => {
+            ops.set_progress(op_id, 30, "Running setup script...");
+            ops.complete_step(op_id, 1);
+
+            match ssh.execute_script(&script_content) {
+                Ok(result) => {
+                    tracing::info!(
+                        "BYOVPS script completed on {} with exit code {}",
+                        params.vps_ip,
+                        result.exit_code
+                    );
+                    if result.exit_code == 0 {
+                        Ok("success")
+                    } else {
+                        Ok("script_failed") // Non-fatal, conductor may still start
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to execute script on {}: {}", params.vps_ip, e);
+                    Err(format!("Script execution failed: {}", e))
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!("Failed to SSH into {}: {}", params.vps_ip, e);
+            Err(format!(
+                "SSH connection failed to {}. Ensure the IP is reachable from the internet, \
+                 port 22 is open, and credentials are correct.",
+                params.vps_ip
+            ))
+        }
+    };
+
+    if let Err(error) = ssh_result {
+        ops.set_error(op_id, &error);
+        return;
+    }
+
+    ops.complete_step(op_id, 2);
+    ops.set_progress(op_id, 60, "Waiting for conductor to start...");
+
+    // Step 3: Wait for health check
+    // Use the hostname (through Cloudflare tunnel) since conductor only listens on localhost
+    let health_url = format!("https://{}/health", params.hostname);
+    tracing::info!("Polling health at {} (via tunnel)", health_url);
+    let http_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+
+    let mut attempts = 0;
+    let max_attempts = 30; // 30 * 5s = 2.5 minutes
+    let healthy = loop {
+        attempts += 1;
+        if attempts > max_attempts {
+            break false;
+        }
+
+        ops.set_progress(
+            op_id,
+            60 + (attempts * 30 / max_attempts) as u8,
+            &format!("Waiting for conductor... (attempt {}/{})", attempts, max_attempts),
+        );
+
+        if let Ok(response) = http_client.get(&health_url).send().await {
+            if response.status().is_success() {
+                tracing::info!("Conductor healthy at {}", health_url);
+                break true;
+            }
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    };
+
+    if !healthy {
+        ops.set_error(
+            op_id,
+            &format!(
+                "Conductor failed to start within timeout. Check VPS logs at {}",
+                params.vps_ip
+            ),
+        );
+        return;
+    }
+
+    ops.complete_step(op_id, 3);
+    ops.set_progress(op_id, 95, "Creating VPS record...");
+
+    // Step 4: Auto-confirm VPS (create database record)
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+    let ssh_password_hash = match argon2.hash_password(params.ssh_password.as_bytes(), &salt) {
+        Ok(hash) => hash.to_string(),
+        Err(e) => {
+            ops.set_error(op_id, &format!("Failed to hash password: {}", e));
+            return;
+        }
+    };
+
+    let vps_id = Uuid::new_v4();
+    let result = sqlx::query(
+        r#"
+        INSERT INTO user_vps (
+            id, user_id, provider, provider_instance_id, provider_order_id,
+            plan_id, template_id, data_center_id, hostname, ip_address,
+            status, ssh_username, ssh_password_hash, jwt_secret,
+            device_type, ready_at, conductor_verified_at
+        ) VALUES (
+            $1, $2, 'byovps', 0, NULL,
+            'byovps-custom', 0, 0, $3, $4,
+            'ready', 'root', $5, $6,
+            'byovps', NOW(), NOW()
+        )
+        "#,
+    )
+    .bind(vps_id)
+    .bind(params.user_id)
+    .bind(&params.hostname)
+    .bind(&params.vps_ip)
+    .bind(&ssh_password_hash)
+    .bind(&params.jwt_secret)
+    .execute(pool.as_ref())
+    .await;
+
+    match result {
+        Ok(_) => {
+            tracing::info!(
+                "VPS auto-confirmed: id={}, hostname={}, ip={}",
+                vps_id,
+                params.hostname,
+                params.vps_ip
+            );
+
+            ops.complete_step(op_id, 4);
+            ops.set_result(
+                op_id,
+                OperationResult {
+                    hostname: params.hostname,
+                    ip_address: params.vps_ip,
+                    jwt_secret: params.jwt_secret,
+                    ssh_password: params.ssh_password,
+                    vps_id: Some(vps_id),
+                },
+            );
+        }
+        Err(e) => {
+            tracing::error!("Failed to create VPS record: {}", e);
+            ops.set_error(op_id, &format!("Failed to create VPS record: {}", e));
+        }
+    }
+}
+
 /// Replace an existing BYOVPS with a new one for the authenticated user
 ///
 /// POST /api/byovps/replace
 ///
-/// This endpoint atomically:
-/// 1. Validates the input (IP, username, password)
-/// 2. Terminates any existing active VPS (including DNS cleanup)
-/// 3. Provisions the new VPS using the same flow as /provision
+/// This endpoint is ASYNC to avoid Cloudflare timeouts:
+/// 1. Validates the input (IP, username, password) - synchronous
+/// 2. Terminates any existing active VPS - synchronous
+/// 3. Sets up Cloudflare tunnel/DNS - synchronous
+/// 4. Returns operation_id immediately
+/// 5. SSH provisioning runs in background
+/// 6. Background worker auto-confirms VPS when healthy
 ///
-/// Unlike /provision which returns 400 if user has active VPS, /replace
-/// handles the termination automatically.
+/// Poll GET /api/byovps/operations/{id} for status.
 pub async fn replace_byovps(
     user: AuthenticatedUser,
     pool: web::Data<PgPool>,
     config: web::Data<Config>,
     cloudflare: Option<web::Data<CloudflareService>>,
+    ops: web::Data<OperationStore>,
     req: web::Json<ProvisionByovpsRequest>,
 ) -> AppResult<HttpResponse> {
     // Validate IP address format
@@ -525,9 +802,10 @@ pub async fn replace_byovps(
     let hostname = format!("{}.spoq.dev", username.to_lowercase());
     let jwt_secret = config.jwt_secret.clone();
 
-    // Health check first: If VPS is already healthy from a previous attempt, skip provisioning
-    let health_url = format!("https://{}/health", hostname);
-    tracing::info!("Checking if VPS is already healthy at {}", health_url);
+    // Health check at the NEW IP (not hostname, which still points to the old VPS via tunnel).
+    // Use direct HTTP to port 8000 since the new machine won't have a TLS cert yet.
+    let health_url = format!("http://{}:8000/health", req.vps_ip);
+    tracing::info!("Checking if new VPS is already healthy at {}", health_url);
 
     let http_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
@@ -537,7 +815,7 @@ pub async fn replace_byovps(
     if let Ok(response) = http_client.get(&health_url).send().await {
         if response.status().is_success() {
             tracing::info!(
-                "VPS already healthy at {} - skipping provisioning",
+                "New VPS already healthy at {} - skipping provisioning",
                 health_url
             );
 
@@ -631,92 +909,61 @@ pub async fn replace_byovps(
     // Get tunnel credentials (we know it's Some at this point)
     let creds = tunnel_credentials.unwrap();
 
-    // Generate the post-install script with tunnel configuration
-    let params = PostInstallParams {
-        ssh_password: &req.ssh_password,
-        hostname: &hostname,
-        conductor_url: "https://download.spoq.dev/conductor",
-        jwt_secret: &config.jwt_secret,
-        owner_id: &user.user_id.to_string(),
-        tunnel_id: &creds.tunnel_id,
-        tunnel_token: &creds.token,
-    };
-    let script_content = generate_post_install_script(&params);
-
-    // SSH into the VPS and execute the script
-    let ssh_config = SshConfig::new(&req.vps_ip, &req.ssh_username, &req.ssh_password)
-        .with_timeout(60)
-        .with_exec_timeout(600);
-
-    // Execute the install script via SSH
-    let ssh_status = match SshInstallerService::connect(ssh_config) {
-        Ok(ssh) => {
-            tracing::info!("SSH connection established to {}", req.vps_ip);
-
-            match ssh.execute_script(&script_content) {
-                Ok(result) => {
-                    tracing::info!(
-                        "BYOVPS script completed on {} with exit code {}",
-                        req.vps_ip,
-                        result.exit_code
-                    );
-                    if result.exit_code == 0 {
-                        "success"
-                    } else {
-                        "script_failed"
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Failed to execute script on {}: {}", req.vps_ip, e);
-                    "script_error"
-                }
-            }
-        }
-        Err(e) => {
-            tracing::error!("Failed to SSH into {}: {}", req.vps_ip, e);
-            "ssh_failed"
-        }
-    };
-
-    // Build response message based on SSH result
-    let message = match ssh_status {
-        "success" => format!(
-            "SSH script executed successfully. Conductor is starting on {}. \
-             The CLI will poll https://{}/health to verify readiness.",
-            req.vps_ip, hostname
-        ),
-        "script_failed" => format!(
-            "SSH script completed with non-zero exit code on {}. \
-             The CLI will poll https://{}/health to verify readiness.",
-            req.vps_ip, hostname
-        ),
-        "script_error" => format!(
-            "SSH script execution error on {}. \
-             The CLI will poll https://{}/health to verify readiness.",
-            req.vps_ip, hostname
-        ),
-        _ => format!(
-            "SSH connection failed to {}. Please verify your credentials and try again.",
-            req.vps_ip
-        ),
-    };
-
-    tracing::info!(
-        "BYOVPS replace returning: hostname={}, ip={}, ssh_status={}",
-        hostname,
-        req.vps_ip,
-        ssh_status
+    // Create async operation for tracking
+    let operation_id = ops.create(
+        user.user_id,
+        "replace",
+        vec![
+            "Validate input",
+            "Connect via SSH",
+            "Execute setup script",
+            "Wait for conductor",
+            "Create VPS record",
+        ],
     );
 
-    let response = ByovpsPendingResponse {
-        hostname,
-        ip_address: req.vps_ip.clone(),
-        jwt_secret,
+    // Mark first step complete (validation done above)
+    ops.complete_step(operation_id, 0);
+
+    // Prepare parameters for background worker
+    let worker_params = ProvisioningParams {
+        operation_id,
+        user_id: user.user_id,
+        vps_ip: req.vps_ip.clone(),
+        ssh_username: req.ssh_username.clone(),
         ssh_password: req.ssh_password.clone(),
-        message,
+        hostname: hostname.clone(),
+        jwt_secret: jwt_secret.clone(),
+        tunnel_id: creds.tunnel_id.clone(),
+        tunnel_token: creds.token.clone(),
     };
 
-    Ok(HttpResponse::Ok().json(response))
+    // Clone Arc references for the background task
+    let ops_clone = Arc::new(ops.get_ref().clone());
+    let pool_clone = Arc::new(pool.get_ref().clone());
+    let config_clone = Arc::new(config.get_ref().clone());
+
+    // Spawn background worker - this does the slow SSH work
+    tokio::spawn(async move {
+        run_provisioning_worker(worker_params, ops_clone, pool_clone, config_clone).await;
+    });
+
+    tracing::info!(
+        "BYOVPS replace queued: operation_id={}, hostname={}, ip={}",
+        operation_id,
+        hostname,
+        req.vps_ip
+    );
+
+    // Return immediately with operation ID
+    let response = ByovpsAsyncResponse {
+        operation_id,
+        hostname,
+        ip_address: req.vps_ip.clone(),
+        message: "Provisioning started. Poll /api/byovps/operations/{id} for status.".to_string(),
+    };
+
+    Ok(HttpResponse::Accepted().json(response))
 }
 
 #[cfg(test)]

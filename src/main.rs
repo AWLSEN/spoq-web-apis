@@ -17,7 +17,7 @@ use spoq_web_apis::handlers::{
     confirm_vps, get_vps_precheck, get_vps_status, list_datacenters, list_plans,
     list_subscription_plans, provision_vps, reset_password, restart_vps, start_vps, stop_vps,
     // BYOVPS handlers
-    provision_byovps, replace_byovps,
+    get_operation, provision_byovps, replace_byovps,
     // Payment handlers
     create_checkout_session, create_portal_session, get_session_status, payment_cancel,
     payment_success, portal_return,
@@ -27,7 +27,7 @@ use spoq_web_apis::handlers::{
     stripe_webhook,
 };
 use spoq_web_apis::middleware::create_rate_limiter;
-use spoq_web_apis::services::{CloudflareService, HostingerClient, StripeClientService};
+use spoq_web_apis::services::{CloudflareService, HostingerClient, OperationStore, StripeClientService};
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -114,6 +114,10 @@ async fn main() -> std::io::Result<()> {
     let db_pool = web::Data::new(pool);
     let app_config = web::Data::new(config);
 
+    // Create in-memory operation store for async provisioning
+    let operation_store = web::Data::new(OperationStore::new());
+    tracing::info!("Operation store initialized for async provisioning");
+
     tracing::info!("Starting server at http://{}", server_addr);
 
     HttpServer::new(move || {
@@ -124,6 +128,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(app_state.clone())
             .app_data(db_pool.clone())
             .app_data(app_config.clone())
+            .app_data(operation_store.clone())
             // Request logging
             .wrap(Logger::default())
             // Distributed tracing
@@ -176,7 +181,8 @@ async fn main() -> std::io::Result<()> {
         app = app.service(
             web::scope("/api/byovps")
                 .route("/provision", web::post().to(provision_byovps))
-                .route("/replace", web::post().to(replace_byovps)),
+                .route("/replace", web::post().to(replace_byovps))
+                .route("/operations/{id}", web::get().to(get_operation)),
         );
 
         // TEMPORARY: Admin routes for database cleanup (NO AUTHENTICATION!)

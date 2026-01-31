@@ -19,8 +19,7 @@ fn make_params<'a>(
         jwt_secret,
         owner_id,
         tunnel_id: "test-tunnel-id",
-        tunnel_secret: "dGVzdC10dW5uZWwtc2VjcmV0",
-        account_id: "test-account-id",
+        tunnel_token: "eyJhIjoiYWNjb3VudC1pZCIsInQiOiJ0dW5uZWwtaWQiLCJzIjoic2VjcmV0In0=",
     }
 }
 
@@ -229,8 +228,7 @@ fn test_post_install_script_cloudflared_setup() {
         jwt_secret: "jwt-secret",
         owner_id: "user-uuid",
         tunnel_id: "abc-123-tunnel",
-        tunnel_secret: "c2VjcmV0LWtleQ==",
-        account_id: "cf-account-456",
+        tunnel_token: "eyJhIjoiY2YtYWNjb3VudC00NTYiLCJ0IjoiYWJjLTEyMy10dW5uZWwiLCJzIjoiYzJWamNtVjBMV3RsZVE9PSJ9",
     };
     let script = generate_post_install_script(&params);
 
@@ -238,18 +236,15 @@ fn test_post_install_script_cloudflared_setup() {
     assert!(script.contains("cloudflared-linux-amd64.deb"));
     assert!(script.contains("dpkg -i /tmp/cloudflared.deb"));
 
-    // Verify tunnel credentials
+    // Verify tunnel token is configured
     assert!(script.contains("TUNNEL_ID=\"abc-123-tunnel\""));
-    assert!(script.contains("TUNNEL_SECRET=\"c2VjcmV0LWtleQ==\""));
-    assert!(script.contains("CF_ACCOUNT_ID=\"cf-account-456\""));
+    assert!(script.contains("TUNNEL_TOKEN="));
 
     // Verify cloudflared config
     assert!(script.contains("/etc/cloudflared/config.yml"));
-    assert!(script.contains("tunnel: $TUNNEL_ID"));
-    assert!(script.contains("credentials-file:"));
 
-    // Verify cloudflared service
-    assert!(script.contains("cloudflared service install"));
+    // Verify cloudflared service uses token auth
+    assert!(script.contains("--token $TUNNEL_TOKEN"));
     assert!(script.contains("systemctl enable cloudflared"));
     assert!(script.contains("systemctl start cloudflared"));
 

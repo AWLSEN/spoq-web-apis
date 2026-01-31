@@ -148,8 +148,7 @@ fn make_params<'a>(
         jwt_secret,
         owner_id,
         tunnel_id: "test-tunnel-id",
-        tunnel_secret: "dGVzdC10dW5uZWwtc2VjcmV0",
-        account_id: "test-account-id",
+        tunnel_token: "eyJhIjoiYWNjb3VudC1pZCIsInQiOiJ0dW5uZWwtaWQiLCJzIjoic2VjcmV0In0=",
     }
 }
 
@@ -218,8 +217,7 @@ fn test_byovps_script_includes_cloudflared_tunnel() {
         jwt_secret: "jwt-secret",
         owner_id: "user-uuid",
         tunnel_id: "tunnel-abc-123",
-        tunnel_secret: "c2VjcmV0LWtleQ==",
-        account_id: "cf-account-456",
+        tunnel_token: "eyJhIjoiY2YtYWNjb3VudC00NTYiLCJ0IjoidHVubmVsLWFiYy0xMjMiLCJzIjoiYzJWamNtVjBMV3RsZVE9PSJ9",
     };
     let script = generate_post_install_script(&params);
 
@@ -227,14 +225,11 @@ fn test_byovps_script_includes_cloudflared_tunnel() {
     assert!(script.contains("cloudflared"));
     assert!(script.contains("cloudflared-linux-amd64.deb"));
 
-    // Verify tunnel credentials are configured
-    assert!(script.contains("TUNNEL_ID=\"tunnel-abc-123\""));
-    assert!(script.contains("TUNNEL_SECRET=\"c2VjcmV0LWtleQ==\""));
-    assert!(script.contains("CF_ACCOUNT_ID=\"cf-account-456\""));
+    // Verify tunnel token is configured
+    assert!(script.contains("TUNNEL_TOKEN="));
 
-    // Verify cloudflared config with ingress to Conductor (port 8080)
-    assert!(script.contains("/etc/cloudflared/config.yml"));
-    assert!(script.contains("service: http://localhost:8080"));
+    // Verify cloudflared runs with tunnel token
+    assert!(script.contains("tunnel-abc-123"));
 
     // Should NOT contain Caddy (replaced by cloudflared)
     assert!(!script.contains("caddy"));
@@ -285,8 +280,7 @@ fn test_byovps_script_different_users_get_different_scripts() {
         jwt_secret: "secret-1",
         owner_id: "user-1-id",
         tunnel_id: "tunnel-1",
-        tunnel_secret: "secret1",
-        account_id: "account-1",
+        tunnel_token: "token-1",
     };
     let script1 = generate_post_install_script(&params1);
 
@@ -297,8 +291,7 @@ fn test_byovps_script_different_users_get_different_scripts() {
         jwt_secret: "secret-2",
         owner_id: "user-2-id",
         tunnel_id: "tunnel-2",
-        tunnel_secret: "secret2",
-        account_id: "account-2",
+        tunnel_token: "token-2",
     };
     let script2 = generate_post_install_script(&params2);
 

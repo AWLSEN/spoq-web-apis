@@ -228,13 +228,6 @@ pub async fn confirm_vps(
     pool: web::Data<PgPool>,
     req: web::Json<ConfirmVpsRequest>,
 ) -> AppResult<HttpResponse> {
-    // Validate SSH password length
-    if req.ssh_password.len() < 12 {
-        return Err(AppError::BadRequest(
-            "SSH password must be at least 12 characters".to_string(),
-        ));
-    }
-
     // Validate provider field
     let provider = req.provider.to_lowercase();
     let is_byovps = provider == "byovps";
@@ -242,6 +235,14 @@ pub async fn confirm_vps(
     if provider != "hostinger" && provider != "byovps" {
         return Err(AppError::BadRequest(
             format!("Invalid provider '{}'. Must be 'hostinger' or 'byovps'", req.provider),
+        ));
+    }
+
+    // Validate SSH password length (BYOVPS allows shorter user-supplied passwords)
+    let min_password_len = if is_byovps { 8 } else { 12 };
+    if req.ssh_password.len() < min_password_len {
+        return Err(AppError::BadRequest(
+            format!("SSH password must be at least {} characters", min_password_len),
         ));
     }
 
