@@ -21,8 +21,6 @@ use spoq_web_apis::handlers::{
     // Payment handlers
     create_checkout_session, create_portal_session, get_session_status, payment_cancel,
     payment_success, portal_return,
-    // Admin handlers (TEMPORARY - NO AUTH)
-    cleanup_all_vps, cleanup_user_vps, list_all_vps,
     // Webhook handlers
     stripe_webhook,
 };
@@ -188,15 +186,6 @@ async fn main() -> std::io::Result<()> {
                 .route("/provision", web::post().to(provision_byovps))
                 .route("/replace", web::post().to(replace_byovps))
                 .route("/operations/{id}", web::get().to(get_operation)),
-        );
-
-        // TEMPORARY: Admin routes for database cleanup (NO AUTHENTICATION!)
-        // TODO: Remove these routes after database cleanup is complete
-        app = app.service(
-            web::scope("/api/admin")
-                .route("/cleanup-vps", web::delete().to(cleanup_all_vps))
-                .route("/cleanup-vps/{email}", web::delete().to(cleanup_user_vps))
-                .route("/list-vps", web::get().to(list_all_vps)),
         );
 
         // VPS precheck endpoint (available without Hostinger - just DB query)

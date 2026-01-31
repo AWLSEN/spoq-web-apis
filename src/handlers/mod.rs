@@ -5,10 +5,8 @@
 //! - `health` - Health check endpoint
 //! - `vps` - VPS provisioning and management handlers
 //! - `byovps` - BYOVPS (Bring Your Own VPS) provisioning handlers
-//! - `admin` - Temporary admin endpoints (NO AUTH - remove after cleanup!)
 //! - `webhooks` - Stripe webhook handlers for subscription lifecycle
 
-pub mod admin;
 pub mod auth;
 pub mod byovps;
 pub mod health;
@@ -34,7 +32,6 @@ pub use byovps::{
     get_operation, provision_byovps, replace_byovps, ByovpsAsyncResponse, ByovpsPendingResponse,
     ProvisionByovpsRequest,
 };
-pub use admin::{cleanup_all_vps, cleanup_user_vps, list_all_vps};
 pub use payment::{
     create_checkout_session, create_portal_session, get_session_status, payment_cancel,
     payment_success, portal_return, CheckoutSessionResponse, CreateCheckoutRequest,
