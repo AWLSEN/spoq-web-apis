@@ -991,9 +991,10 @@ pub async fn start_vps(
 
     hostinger.start_vps(vm_id).await?;
 
-    // Update status
-    sqlx::query("UPDATE user_vps SET status = 'provisioning' WHERE id = $1")
+    // Update status (include user_id check for defense-in-depth)
+    sqlx::query("UPDATE user_vps SET status = 'provisioning' WHERE id = $1 AND user_id = $2")
         .bind(vps.id)
+        .bind(user.user_id)
         .execute(pool.get_ref())
         .await?;
 
@@ -1026,9 +1027,10 @@ pub async fn stop_vps(
 
     hostinger.stop_vps(vm_id).await?;
 
-    // Update status
-    sqlx::query("UPDATE user_vps SET status = 'stopped' WHERE id = $1")
+    // Update status (include user_id check for defense-in-depth)
+    sqlx::query("UPDATE user_vps SET status = 'stopped' WHERE id = $1 AND user_id = $2")
         .bind(vps.id)
+        .bind(user.user_id)
         .execute(pool.get_ref())
         .await?;
 
@@ -1061,9 +1063,10 @@ pub async fn restart_vps(
 
     hostinger.restart_vps(vm_id).await?;
 
-    // Update status
-    sqlx::query("UPDATE user_vps SET status = 'provisioning' WHERE id = $1")
+    // Update status (include user_id check for defense-in-depth)
+    sqlx::query("UPDATE user_vps SET status = 'provisioning' WHERE id = $1 AND user_id = $2")
         .bind(vps.id)
+        .bind(user.user_id)
         .execute(pool.get_ref())
         .await?;
 

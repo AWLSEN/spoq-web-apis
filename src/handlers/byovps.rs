@@ -805,9 +805,10 @@ pub async fn replace_byovps(
             }
         }
 
-        // Mark old VPS as terminated
-        sqlx::query("UPDATE user_vps SET status = 'terminated', updated_at = NOW() WHERE id = $1")
+        // Mark old VPS as terminated (include user_id check for defense-in-depth)
+        sqlx::query("UPDATE user_vps SET status = 'terminated', updated_at = NOW() WHERE id = $1 AND user_id = $2")
             .bind(old_vps.id)
+            .bind(user.user_id)
             .execute(pool.get_ref())
             .await?;
 
