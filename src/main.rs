@@ -5,6 +5,7 @@
 //! and VPS provisioning via Hostinger.
 
 use actix_web::{middleware::Logger, web, App, HttpServer};
+use tokio::signal;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use spoq_web_apis::config::Config;
@@ -122,7 +123,7 @@ async fn main() -> std::io::Result<()> {
 
     tracing::info!("Starting server at http://{}", server_addr);
 
-    HttpServer::new(move || {
+    let server = HttpServer::new(move || {
         // Create rate limiter for each worker (Governor doesn't implement Clone)
         let rate_limiter = create_rate_limiter();
 
@@ -227,6 +228,17 @@ async fn main() -> std::io::Result<()> {
         app
     })
     .bind(&server_addr)?
-    .run()
-    .await
+    .shutdown_timeout(30) // 30 second graceful shutdown
+    .run();
+
+    // Handle shutdown signals for graceful termination
+    let server_handle = server.handle();
+    tokio::spawn(async move {
+        if let Ok(()) = signal::ctrl_c().await {
+            tracing::info!("Received shutdown signal, draining connections...");
+            server_handle.stop(true).await;
+        }
+    });
+
+    server.await
 }
