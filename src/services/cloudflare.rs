@@ -2,6 +2,10 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use rand::{rngs::OsRng, RngCore};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
+
+/// Default timeout for Cloudflare API requests (30 seconds)
+const API_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct CloudflareService {
@@ -89,8 +93,13 @@ pub enum CloudflareServiceError {
 
 impl CloudflareService {
     pub fn new(api_token: String, zone_id: String) -> Self {
+        let client = Client::builder()
+            .timeout(API_TIMEOUT)
+            .build()
+            .expect("Failed to create HTTP client");
+
         Self {
-            client: Client::new(),
+            client,
             api_token,
             zone_id,
             account_id: None,
@@ -99,8 +108,13 @@ impl CloudflareService {
 
     /// Create a CloudflareService with account ID for tunnel operations
     pub fn with_account_id(api_token: String, zone_id: String, account_id: String) -> Self {
+        let client = Client::builder()
+            .timeout(API_TIMEOUT)
+            .build()
+            .expect("Failed to create HTTP client");
+
         Self {
-            client: Client::new(),
+            client,
             api_token,
             zone_id,
             account_id: Some(account_id),

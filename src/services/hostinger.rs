@@ -5,9 +5,13 @@
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use thiserror::Error;
 
 const HOSTINGER_API_BASE: &str = "https://developers.hostinger.com";
+
+/// Default timeout for Hostinger API requests (30 seconds)
+const API_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Default VPS template (Ubuntu 22.04 LTS)
 pub const DEFAULT_TEMPLATE_ID: i32 = 1007;
@@ -206,10 +210,12 @@ struct ApiErrorResponse {
 impl HostingerClient {
     /// Create a new Hostinger API client
     pub fn new(api_key: String) -> Self {
-        Self {
-            client: Client::new(),
-            api_key,
-        }
+        let client = Client::builder()
+            .timeout(API_TIMEOUT)
+            .build()
+            .expect("Failed to create HTTP client");
+
+        Self { client, api_key }
     }
 
     /// Make a GET request to the Hostinger API
