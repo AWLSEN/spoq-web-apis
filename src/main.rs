@@ -27,7 +27,7 @@ use spoq_web_apis::handlers::{
     stripe_webhook,
 };
 use spoq_web_apis::middleware::create_rate_limiter;
-use spoq_web_apis::services::{CloudflareService, HostingerClient, OperationStore, StripeClientService};
+use spoq_web_apis::services::{AuditService, CloudflareService, HostingerClient, OperationStore, StripeClientService};
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -118,6 +118,10 @@ async fn main() -> std::io::Result<()> {
     let operation_store = web::Data::new(OperationStore::new());
     tracing::info!("Operation store initialized for async provisioning");
 
+    // Create audit service for security logging (use db_pool.get_ref() to get a reference to the pool)
+    let audit_service = web::Data::new(AuditService::new(db_pool.get_ref().clone()));
+    tracing::info!("Audit service initialized for security logging");
+
     tracing::info!("Starting server at http://{}", server_addr);
 
     HttpServer::new(move || {
@@ -129,6 +133,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(db_pool.clone())
             .app_data(app_config.clone())
             .app_data(operation_store.clone())
+            .app_data(audit_service.clone())
             // Request logging
             .wrap(Logger::default())
             // Distributed tracing

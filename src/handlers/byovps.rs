@@ -26,15 +26,17 @@ use uuid::Uuid;
 
 use crate::config::Config;
 use crate::error::{AppError, AppResult};
+use crate::middleware::audit::RequestContext;
 use crate::middleware::auth::AuthenticatedUser;
 use crate::models::UserVps;
+use crate::services::audit::{AuditAction, AuditLogEntry, AuditService, ResourceType};
 use crate::services::cloudflare::CloudflareService;
 use crate::services::hostinger::{generate_post_install_script, PostInstallParams};
 use crate::services::operations::{OperationResult, OperationStatus, OperationStore};
 use crate::services::ssh_installer::{SshConfig, SshInstallerService};
 
 /// Request to provision a BYOVPS (Bring Your Own VPS)
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ProvisionByovpsRequest {
     /// IP address of the user's VPS
     pub vps_ip: String,
@@ -705,41 +707,56 @@ pub async fn replace_byovps(
     config: web::Data<Config>,
     cloudflare: Option<web::Data<CloudflareService>>,
     ops: web::Data<OperationStore>,
+    audit: web::Data<AuditService>,
+    req_ctx: RequestContext,
     req: web::Json<ProvisionByovpsRequest>,
 ) -> AppResult<HttpResponse> {
+    // Helper to log audit on error
+    let log_error = |msg: &str| {
+        audit.log_async(
+            AuditLogEntry::new(AuditAction::ByovpsReplace, ResourceType::Byovps)
+                .user_id(user.user_id)
+                .ip_address(req_ctx.ip_address.clone().unwrap_or_default())
+                .user_agent(req_ctx.user_agent.clone().unwrap_or_default())
+                .request_data(&*req)
+                .response_status(400)
+                .error_message(msg),
+        );
+    };
+
     // Validate IP address format
     if !is_valid_ip(&req.vps_ip) {
-        return Err(AppError::BadRequest(
-            "Invalid VPS IP address format. Must be a valid IPv4 or IPv6 address.".to_string(),
-        ));
+        let msg = "Invalid VPS IP address format. Must be a valid IPv4 or IPv6 address.";
+        log_error(msg);
+        return Err(AppError::BadRequest(msg.to_string()));
     }
 
     // Validate username is not empty
     if req.ssh_username.trim().is_empty() {
-        return Err(AppError::BadRequest(
-            "SSH username cannot be empty".to_string(),
-        ));
+        let msg = "SSH username cannot be empty";
+        log_error(msg);
+        return Err(AppError::BadRequest(msg.to_string()));
     }
 
     // Validate password is not empty
     if req.ssh_password.is_empty() {
-        return Err(AppError::BadRequest(
-            "SSH password cannot be empty".to_string(),
-        ));
+        let msg = "SSH password cannot be empty";
+        log_error(msg);
+        return Err(AppError::BadRequest(msg.to_string()));
     }
 
     // Validate password length (for security)
     if req.ssh_password.len() < 8 {
-        return Err(AppError::BadRequest(
-            "SSH password must be at least 8 characters".to_string(),
-        ));
+        let msg = "SSH password must be at least 8 characters";
+        log_error(msg);
+        return Err(AppError::BadRequest(msg.to_string()));
     }
 
     // BYOVPS requires root access for proper system configuration
     if req.ssh_username != "root" {
-        return Err(AppError::BadRequest(
-            "BYOVPS requires SSH access as 'root' user for proper system configuration.".to_string(),
-        ));
+        let msg = "BYOVPS requires SSH access as 'root' user for proper system configuration.";
+        log_error(msg);
+        return Err(AppError::BadRequest(msg.to_string()));
     }
 
     // Check if user has an existing active VPS - if so, terminate it first
@@ -966,6 +983,17 @@ pub async fn replace_byovps(
         operation_id,
         hostname,
         req.vps_ip
+    );
+
+    // Audit log: operation accepted
+    audit.log_async(
+        AuditLogEntry::new(AuditAction::ByovpsReplace, ResourceType::Byovps)
+            .user_id(user.user_id)
+            .resource_id(operation_id)
+            .ip_address(req_ctx.ip_address.unwrap_or_default())
+            .user_agent(req_ctx.user_agent.unwrap_or_default())
+            .request_data(&*req)
+            .response_status(202),
     );
 
     // Return immediately with operation ID

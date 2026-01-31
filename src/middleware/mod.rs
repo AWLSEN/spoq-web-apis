@@ -3,10 +3,13 @@
 //! This module contains:
 //! - `auth` - JWT authentication middleware (AuthenticatedUser extractor)
 //! - `rate_limit` - Rate limiting middleware using Governor
+//! - `audit` - Request context extraction for audit logging
 
+pub mod audit;
 pub mod auth;
 pub mod rate_limit;
 
 // Re-export commonly used types
+pub use audit::{AuditExt, RequestContext};
 pub use auth::{AuthError, AuthenticatedUser};
 pub use rate_limit::{create_dev_rate_limiter, create_internal_rate_limiter, create_rate_limiter, RateLimiter, RateLimiterConfig};
