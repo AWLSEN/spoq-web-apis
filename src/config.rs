@@ -7,6 +7,7 @@ pub struct Config {
     pub github_client_id: String,
     pub github_client_secret: String,
     pub github_redirect_uri: String,
+    pub github_web_redirect_uri: String,
     pub jwt_secret: String,
     pub jwt_access_token_expiry_secs: i64,
     pub jwt_refresh_token_expiry_days: i64,
@@ -57,6 +58,9 @@ impl Config {
 
         let github_redirect_uri = env::var("GITHUB_REDIRECT_URI")
             .map_err(|_| ConfigError::MissingVar("GITHUB_REDIRECT_URI".to_string()))?;
+
+        let github_web_redirect_uri = env::var("GITHUB_WEB_REDIRECT_URI")
+            .unwrap_or_else(|_| github_redirect_uri.clone());
 
         let jwt_secret = env::var("JWT_SECRET")
             .map_err(|_| ConfigError::MissingVar("JWT_SECRET".to_string()))?;
@@ -142,6 +146,7 @@ impl Config {
             github_client_id,
             github_client_secret,
             github_redirect_uri,
+            github_web_redirect_uri,
             jwt_secret,
             jwt_access_token_expiry_secs,
             jwt_refresh_token_expiry_days,
