@@ -16,10 +16,11 @@ pub mod webhooks;
 
 // Re-export commonly used types
 pub use auth::{
-    device_authorize, device_init, device_token, device_verify, github_callback, github_redirect,
-    refresh_token, revoke_token, AppState, AuthorizeForm, CallbackQuery, DeviceInitRequest,
-    DeviceInitResponse, DeviceTokenRequest, GitHubRedirectQuery, RefreshRequest, RefreshResponse,
-    RevokeRequest, TokenResponse, VerifyQuery,
+    auth_me, device_authorize, device_init, device_token, device_verify, github_callback,
+    github_redirect, refresh_token, revoke_token, web_authorize_url, web_exchange, AppState,
+    AuthorizeForm, CallbackQuery, DeviceInitRequest, DeviceInitResponse, DeviceTokenRequest,
+    GitHubRedirectQuery, RefreshRequest, RefreshResponse, RevokeRequest, TokenResponse,
+    UserProfileResponse, VerifyQuery, WebAuthorizeQuery, WebAuthorizeResponse, WebExchangeRequest,
 };
 pub use health::{health_check, HealthResponse};
 pub use vps::{

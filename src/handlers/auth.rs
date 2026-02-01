@@ -3,6 +3,9 @@
 //! This module provides the following endpoints:
 //! - `GET /auth/github` - Initiates GitHub OAuth flow (supports return_to for device verification)
 //! - `GET /auth/github/callback` - Handles OAuth callback from GitHub (for device flow login)
+//! - `GET /auth/web/authorize-url` - Returns GitHub OAuth URL for web login
+//! - `POST /auth/web/exchange` - Exchanges GitHub OAuth code for tokens (web login)
+//! - `GET /auth/me` - Returns the authenticated user's profile
 //! - `POST /auth/refresh` - Refreshes access token using refresh token
 //! - `POST /auth/revoke` - Revokes a refresh token
 //! - `POST /auth/device` - Initiates device authorization flow (for CLI)
@@ -26,11 +29,14 @@ use crate::services::device::{
     approve_device_grant, create_device_grant, decode_verification_param, deny_device_grant,
     get_device_grant_by_device_code, get_device_grant_by_word_code,
 };
-use crate::services::github::{exchange_code, get_authorize_url, get_primary_email, get_user, get_user_emails, GitHubOAuthConfig};
+use crate::services::github::{
+    exchange_code, get_authorize_url, get_primary_email, get_user, get_user_emails, GitHubOAuthConfig,
+    GitHubUser,
+};
 use crate::services::token::{
     create_access_token, generate_refresh_token, hash_token, verify_token,
 };
-use crate::services::user::find_or_create_from_github;
+use crate::services::user::{find_by_id, find_or_create_from_github};
 
 /// Application state shared across handlers.
 #[derive(Clone)]
@@ -50,6 +56,20 @@ pub struct CallbackQuery {
     pub code: String,
     /// State parameter for CSRF protection
     pub state: String,
+}
+
+/// Query parameters for web OAuth authorize URL.
+#[derive(Debug, Deserialize)]
+pub struct WebAuthorizeQuery {
+    /// Random state parameter for CSRF protection
+    pub state: String,
+}
+
+/// Response for web OAuth authorize URL.
+#[derive(Debug, Serialize)]
+pub struct WebAuthorizeResponse {
+    /// Full GitHub authorization URL
+    pub authorize_url: String,
 }
 
 /// Request body for refresh token endpoint.
@@ -73,6 +93,26 @@ pub struct TokenResponse {
     pub expires_at: i64,
     /// The user's ID
     pub user_id: String,
+}
+
+/// Request body for web OAuth exchange.
+#[derive(Debug, Deserialize)]
+pub struct WebExchangeRequest {
+    /// Authorization code from GitHub
+    pub code: String,
+}
+
+/// Public user profile response.
+#[derive(Debug, Serialize)]
+pub struct UserProfileResponse {
+    /// User ID
+    pub id: String,
+    /// GitHub username
+    pub username: String,
+    /// Email address (optional)
+    pub email: Option<String>,
+    /// Avatar URL (optional)
+    pub avatar_url: Option<String>,
 }
 
 /// Response from the refresh endpoint (legacy compatibility).
@@ -161,6 +201,135 @@ const SESSION_COOKIE: &str = "spoq_session";
 const DEVICE_GRANT_EXPIRY_SECS: i64 = 300;
 /// Recommended polling interval in seconds.
 const DEVICE_POLL_INTERVAL_SECS: i64 = 5;
+
+async fn fetch_github_user_from_code(
+    code: &str,
+    redirect_uri: &str,
+    data: &AppState,
+) -> Result<GitHubUser, HttpResponse> {
+    let github_config = GitHubOAuthConfig {
+        client_id: data.config.github_client_id.clone(),
+        client_secret: data.config.github_client_secret.clone(),
+        redirect_uri: redirect_uri.to_string(),
+    };
+
+    // Exchange code for GitHub access token
+    let github_access_token = match exchange_code(&data.http_client, &github_config, code).await {
+        Ok(token) => token,
+        Err(e) => {
+            tracing::error!("Failed to exchange code: {:?}", e);
+            return Err(HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "Failed to authenticate with GitHub"})));
+        }
+    };
+
+    // Fetch GitHub user profile
+    let mut github_user = match get_user(&data.http_client, &github_access_token).await {
+        Ok(user) => user,
+        Err(e) => {
+            tracing::error!("Failed to fetch GitHub user: {:?}", e);
+            return Err(
+                HttpResponse::InternalServerError().json(serde_json::json!({"error": "Failed to fetch user profile"})),
+            );
+        }
+    };
+
+    // Fetch user emails from GitHub /user/emails endpoint (non-fatal if it fails)
+    match get_user_emails(&data.http_client, &github_access_token).await {
+        Ok(emails) => {
+            if let Some(primary_email) = get_primary_email(&emails) {
+                match &github_user.email {
+                    None => {
+                        tracing::debug!(
+                            "Setting email from /user/emails endpoint for user {}: {}",
+                            github_user.login,
+                            primary_email
+                        );
+                        github_user.email = Some(primary_email);
+                    }
+                    Some(existing_email) if existing_email != &primary_email => {
+                        tracing::debug!(
+                            "Preferring primary email from /user/emails for user {}: {} (was: {})",
+                            github_user.login,
+                            primary_email,
+                            existing_email
+                        );
+                        github_user.email = Some(primary_email);
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Failed to fetch user emails from GitHub for user {}: {:?}. Continuing with profile email.",
+                github_user.login,
+                e
+            );
+        }
+    }
+
+    Ok(github_user)
+}
+
+async fn issue_tokens_for_user(
+    user_id: Uuid,
+    data: &AppState,
+) -> Result<TokenResponse, HttpResponse> {
+    let refresh_token = generate_refresh_token();
+    let token_hash = match hash_token(&refresh_token) {
+        Ok(hash) => hash,
+        Err(e) => {
+            tracing::error!("Failed to hash token: {:?}", e);
+            return Err(HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "Failed to generate tokens"})));
+        }
+    };
+
+    let refresh_token_expires_at =
+        Utc::now() + Duration::days(data.config.jwt_refresh_token_expiry_days);
+
+    if let Err(e) = sqlx::query(
+        r#"
+        INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
+        VALUES ($1, $2, $3)
+        "#,
+    )
+    .bind(user_id)
+    .bind(&token_hash)
+    .bind(refresh_token_expires_at)
+    .execute(&data.pool)
+    .await
+    {
+        tracing::error!("Failed to store refresh token: {:?}", e);
+        return Err(HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": "Failed to store tokens"})));
+    }
+
+    let access_token_expires_at =
+        Utc::now().timestamp() + data.config.jwt_access_token_expiry_secs;
+
+    let access_token = match create_access_token(
+        user_id,
+        &data.config.jwt_secret,
+        data.config.jwt_access_token_expiry_secs,
+    ) {
+        Ok(token) => token,
+        Err(e) => {
+            tracing::error!("Failed to create access token: {:?}", e);
+            return Err(HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "Failed to create access token"})));
+        }
+    };
+
+    Ok(TokenResponse {
+        access_token,
+        refresh_token,
+        token_type: "Bearer".to_string(),
+        expires_at: access_token_expires_at,
+        user_id: user_id.to_string(),
+    })
+}
 
 /// Generates a random hex-encoded state string for CSRF protection.
 fn generate_state() -> String {
@@ -285,73 +454,16 @@ pub async fn github_callback(
         }
     };
 
-    let github_config = GitHubOAuthConfig {
-        client_id: data.config.github_client_id.clone(),
-        client_secret: data.config.github_client_secret.clone(),
-        redirect_uri: data.config.github_redirect_uri.clone(),
-    };
-
-    // Exchange code for GitHub access token
-    let github_access_token = match exchange_code(&data.http_client, &github_config, &query.code).await {
-        Ok(token) => token,
-        Err(e) => {
-            tracing::error!("Failed to exchange code: {:?}", e);
-            return HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "Failed to authenticate with GitHub"}));
-        }
-    };
-
-    // Fetch GitHub user profile
-    let mut github_user = match get_user(&data.http_client, &github_access_token).await {
+    let github_user = match fetch_github_user_from_code(
+        &query.code,
+        &data.config.github_redirect_uri,
+        &data,
+    )
+    .await
+    {
         Ok(user) => user,
-        Err(e) => {
-            tracing::error!("Failed to fetch GitHub user: {:?}", e);
-            return HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": "Failed to fetch user profile"}));
-        }
+        Err(response) => return response,
     };
-
-    // Fetch user emails from GitHub /user/emails endpoint (non-fatal if it fails)
-    // This ensures we get the primary verified email even if the user's profile email is private
-    match get_user_emails(&data.http_client, &github_access_token).await {
-        Ok(emails) => {
-            if let Some(primary_email) = get_primary_email(&emails) {
-                // Use the primary verified email from /user/emails endpoint
-                // This is more reliable than the profile email which may be private/null
-                match &github_user.email {
-                    None => {
-                        tracing::debug!(
-                            "Setting email from /user/emails endpoint for user {}: {}",
-                            github_user.login,
-                            primary_email
-                        );
-                        github_user.email = Some(primary_email);
-                    }
-                    Some(existing_email) if existing_email != &primary_email => {
-                        tracing::debug!(
-                            "Preferring primary email from /user/emails for user {}: {} (was: {})",
-                            github_user.login,
-                            primary_email,
-                            existing_email
-                        );
-                        github_user.email = Some(primary_email);
-                    }
-                    Some(_) => {
-                        // Emails match, no change needed
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            // Non-fatal: log the error but continue with the existing flow
-            // The user may still have an email from the profile endpoint
-            tracing::warn!(
-                "Failed to fetch user emails from GitHub for user {}: {:?}. Continuing with profile email.",
-                github_user.login,
-                e
-            );
-        }
-    }
 
     // Find or create user in database
     let user = match find_or_create_from_github(&data.pool, &github_user).await {
@@ -392,6 +504,76 @@ pub async fn github_callback(
         .append_header((header::SET_COOKIE, session_cookie.to_string()))
         .append_header((header::LOCATION, return_to))
         .finish()
+}
+
+/// Returns the GitHub OAuth authorization URL for web login.
+pub async fn web_authorize_url(
+    query: web::Query<WebAuthorizeQuery>,
+    data: web::Data<AppState>,
+) -> HttpResponse {
+    let github_config = GitHubOAuthConfig {
+        client_id: data.config.github_client_id.clone(),
+        client_secret: data.config.github_client_secret.clone(),
+        redirect_uri: data.config.github_web_redirect_uri.clone(),
+    };
+
+    let authorize_url = get_authorize_url(&github_config, &query.state);
+
+    HttpResponse::Ok().json(WebAuthorizeResponse { authorize_url })
+}
+
+/// Exchanges a GitHub OAuth code for tokens (web login).
+pub async fn web_exchange(
+    body: web::Json<WebExchangeRequest>,
+    data: web::Data<AppState>,
+) -> HttpResponse {
+    let github_user = match fetch_github_user_from_code(
+        &body.code,
+        &data.config.github_web_redirect_uri,
+        &data,
+    )
+    .await
+    {
+        Ok(user) => user,
+        Err(response) => return response,
+    };
+
+    let user = match find_or_create_from_github(&data.pool, &github_user).await {
+        Ok(user) => user,
+        Err(e) => {
+            tracing::error!("Failed to create/update user: {:?}", e);
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "Failed to save user"}));
+        }
+    };
+
+    match issue_tokens_for_user(user.id, &data).await {
+        Ok(tokens) => HttpResponse::Ok().json(tokens),
+        Err(response) => response,
+    }
+}
+
+/// Returns the authenticated user's profile.
+pub async fn auth_me(user: AuthenticatedUser, data: web::Data<AppState>) -> HttpResponse {
+    let profile = match find_by_id(&data.pool, user.user_id).await {
+        Ok(Some(profile)) => profile,
+        Ok(None) => {
+            return HttpResponse::NotFound()
+                .json(serde_json::json!({"error": "User not found"}));
+        }
+        Err(e) => {
+            tracing::error!("Failed to fetch user profile: {:?}", e);
+            return HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "Failed to fetch user profile"}));
+        }
+    };
+
+    HttpResponse::Ok().json(UserProfileResponse {
+        id: profile.id.to_string(),
+        username: profile.username,
+        email: profile.email,
+        avatar_url: profile.avatar_url,
+    })
 }
 
 /// Error response for refresh token endpoint.
@@ -1036,68 +1218,10 @@ pub async fn device_token(
                 }
             };
 
-            // Generate refresh token
-            let refresh_token = generate_refresh_token();
-            let token_hash = match hash_token(&refresh_token) {
-                Ok(hash) => hash,
-                Err(e) => {
-                    tracing::error!("Failed to hash token: {:?}", e);
-                    return HttpResponse::InternalServerError().json(DeviceTokenError {
-                        error: "server_error".to_string(),
-                        error_description: Some("Failed to generate tokens".to_string()),
-                    });
-                }
-            };
-
-            // Calculate refresh token expiration (for database storage)
-            let refresh_token_expires_at = Utc::now() + Duration::days(data.config.jwt_refresh_token_expiry_days);
-
-            // Store refresh token hash in database
-            if let Err(e) = sqlx::query(
-                r#"
-                INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
-                VALUES ($1, $2, $3)
-                "#,
-            )
-            .bind(user_id)
-            .bind(&token_hash)
-            .bind(refresh_token_expires_at)
-            .execute(&data.pool)
-            .await
-            {
-                tracing::error!("Failed to store refresh token: {:?}", e);
-                return HttpResponse::InternalServerError().json(DeviceTokenError {
-                    error: "server_error".to_string(),
-                    error_description: Some("Failed to store tokens".to_string()),
-                });
+            match issue_tokens_for_user(user_id, &data).await {
+                Ok(tokens) => HttpResponse::Ok().json(tokens),
+                Err(response) => response,
             }
-
-            // Calculate access token expiration (for response)
-            let access_token_expires_at = Utc::now().timestamp() + data.config.jwt_access_token_expiry_secs;
-
-            // Generate JWT access token
-            let access_token = match create_access_token(
-                user_id,
-                &data.config.jwt_secret,
-                data.config.jwt_access_token_expiry_secs,
-            ) {
-                Ok(token) => token,
-                Err(e) => {
-                    tracing::error!("Failed to create access token: {:?}", e);
-                    return HttpResponse::InternalServerError().json(DeviceTokenError {
-                        error: "server_error".to_string(),
-                        error_description: Some("Failed to create access token".to_string()),
-                    });
-                }
-            };
-
-            HttpResponse::Ok().json(TokenResponse {
-                access_token,
-                refresh_token,
-                token_type: "Bearer".to_string(),
-                expires_at: access_token_expires_at,
-                user_id: user_id.to_string(),
-            })
         }
     }
 }

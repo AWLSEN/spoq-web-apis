@@ -12,8 +12,8 @@ use spoq_web_apis::config::Config;
 use spoq_web_apis::db::{create_pool, run_migrations};
 use spoq_web_apis::handlers::auth::AppState;
 use spoq_web_apis::handlers::{
-    device_authorize, device_init, device_token, device_verify, github_callback, github_redirect,
-    health_check, refresh_token, revoke_token,
+    auth_me, device_authorize, device_init, device_token, device_verify, github_callback,
+    github_redirect, health_check, refresh_token, revoke_token, web_authorize_url, web_exchange,
     // VPS handlers
     confirm_vps, get_vps_precheck, get_vps_status, list_datacenters, list_plans,
     list_subscription_plans, provision_vps, reset_password, restart_vps, start_vps, stop_vps,
@@ -147,6 +147,9 @@ async fn main() -> std::io::Result<()> {
                     // GitHub OAuth flow
                     .route("/github", web::get().to(github_redirect))
                     .route("/github/callback", web::get().to(github_callback))
+                    .route("/web/authorize-url", web::get().to(web_authorize_url))
+                    .route("/web/exchange", web::post().to(web_exchange))
+                    .route("/me", web::get().to(auth_me))
                     // Token management
                     .route("/refresh", web::post().to(refresh_token))
                     .route("/revoke", web::post().to(revoke_token))
