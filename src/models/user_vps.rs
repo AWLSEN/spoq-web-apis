@@ -109,6 +109,8 @@ pub struct UserVps {
     pub vps_secret_hash: Option<String>,
     pub registered_at: Option<DateTime<Utc>>,
     pub conductor_verified_at: Option<DateTime<Utc>>,
+    /// Pending setup nonce for local conductor verification
+    pub pending_setup_nonce: Option<String>,
 }
 
 impl UserVps {

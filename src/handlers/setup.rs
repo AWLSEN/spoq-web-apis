@@ -40,6 +40,7 @@ pub struct SetupCredentialsResponse {
     pub conductor_url: String,
     pub jwt_secret: String,
     pub owner_id: String,
+    pub setup_nonce: String,
 }
 
 /// Response for setup status check
@@ -70,15 +71,26 @@ pub async fn create_setup_token_handler(
     let username = username
         .ok_or_else(|| AppError::Internal("User not found".to_string()))?;
 
+    // Generate a unique nonce for this setup attempt
+    let setup_nonce = uuid::Uuid::new_v4().to_string();
+
+    // Store the nonce in user_vps (if exists) for later verification
+    sqlx::query("UPDATE user_vps SET pending_setup_nonce = $1 WHERE user_id = $2 AND status NOT IN ('terminated')")
+        .bind(&setup_nonce)
+        .bind(user.user_id)
+        .execute(pool.get_ref())
+        .await?;
+
     let token = create_setup_token(
         user.user_id,
         &username,
+        &setup_nonce,
         &app_state.config.jwt_secret,
         app_state.config.jwt_setup_token_expiry_secs,
     )
     .map_err(|e| AppError::Internal(format!("Failed to create setup token: {}", e)))?;
 
-    tracing::info!("Setup token created for user {} ({})", user.user_id, username);
+    tracing::info!("Setup token created for user {} ({}) with nonce {}", user.user_id, username, setup_nonce);
 
     Ok(HttpResponse::Ok().json(SetupTokenResponse {
         setup_token: token,
@@ -205,9 +217,12 @@ pub async fn get_setup_credentials(
     let platform = query.platform.as_deref().unwrap_or("unknown");
     let conductor_url = format!("https://download.spoq.dev/conductor/download/{}", platform);
 
+    // Extract setup_nonce from the token claims
+    let setup_nonce = claims.setup_nonce.clone();
+
     tracing::info!(
-        "Setup credentials issued for user {} (tunnel: {}, hostname: {})",
-        user_id, creds.tunnel_id, hostname
+        "Setup credentials issued for user {} (tunnel: {}, hostname: {}, nonce: {})",
+        user_id, creds.tunnel_id, hostname, setup_nonce
     );
 
     Ok(HttpResponse::Ok().json(SetupCredentialsResponse {
@@ -217,7 +232,22 @@ pub async fn get_setup_credentials(
         conductor_url,
         jwt_secret: app_state.config.jwt_secret.clone(),
         owner_id: user_id.to_string(),
+        setup_nonce,
     }))
+}
+
+/// Query parameters for setup status endpoint
+#[derive(Debug, Deserialize)]
+pub struct SetupStatusQuery {
+    pub setup_token: Option<String>,
+}
+
+/// Health response from conductor with optional nonce
+#[derive(Debug, Deserialize)]
+struct ConductorHealthResponse {
+    pub status: String,
+    #[serde(default)]
+    pub setup_nonce: Option<String>,
 }
 
 /// Check if the user's local conductor tunnel is healthy.
@@ -225,10 +255,13 @@ pub async fn get_setup_credentials(
 /// GET /api/setup/status
 ///
 /// Requires authentication. Checks the tunnel health by making an HTTP
-/// request to the user's hostname.
+/// request to the user's hostname. If a setup_token query param is provided,
+/// extracts the expected nonce and verifies it matches the conductor's response.
 pub async fn get_setup_status(
     user: AuthenticatedUser,
+    query: web::Query<SetupStatusQuery>,
     pool: web::Data<PgPool>,
+    app_state: web::Data<AppState>,
 ) -> AppResult<HttpResponse> {
     let vps: Option<UserVps> = sqlx::query_as(
         "SELECT * FROM user_vps WHERE user_id = $1 AND status NOT IN ('terminated') ORDER BY created_at DESC LIMIT 1",
@@ -249,6 +282,20 @@ pub async fn get_setup_status(
 
     let hostname = vps.hostname.clone();
 
+    // Extract expected nonce from setup token if provided
+    let expected_nonce = if let Some(ref token) = query.setup_token {
+        match decode_setup_token(token, &app_state.config.jwt_secret) {
+            Ok(claims) => Some(claims.setup_nonce),
+            Err(e) => {
+                tracing::warn!("Invalid setup token in status check: {}", e);
+                None
+            }
+        }
+    } else {
+        // Fall back to pending_setup_nonce from DB
+        vps.pending_setup_nonce.clone()
+    };
+
     // Check tunnel health
     let http_client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
@@ -256,10 +303,40 @@ pub async fn get_setup_status(
         .map_err(|e| AppError::Internal(format!("Failed to create HTTP client: {}", e)))?;
 
     let health_url = format!("https://{}/health", hostname);
-    let ready = match http_client.get(&health_url).send().await {
-        Ok(resp) => resp.status().is_success(),
-        Err(_) => false,
+    let (ready, nonce_matches) = match http_client.get(&health_url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            // Parse the health response to check nonce
+            match resp.json::<ConductorHealthResponse>().await {
+                Ok(health) => {
+                    let nonce_ok = match (&expected_nonce, &health.setup_nonce) {
+                        (Some(expected), Some(actual)) => expected == actual,
+                        (None, _) => true, // No expected nonce, accept any conductor
+                        (Some(_), None) => false, // Expected nonce but conductor doesn't have one
+                    };
+                    (nonce_ok, nonce_ok)
+                }
+                Err(_) => {
+                    // Couldn't parse response, fall back to simple status check
+                    // This handles old conductors that don't return nonce
+                    (expected_nonce.is_none(), expected_nonce.is_none())
+                }
+            }
+        }
+        Ok(_) => (false, false),
+        Err(_) => (false, false),
     };
+
+    // If nonce matched, clear the pending_setup_nonce
+    if ready && nonce_matches && expected_nonce.is_some() {
+        let _ = sqlx::query("UPDATE user_vps SET pending_setup_nonce = NULL WHERE id = $1")
+            .bind(vps.id)
+            .execute(pool.get_ref())
+            .await;
+        tracing::info!(
+            "Setup nonce verified for user {}, conductor {} is ready",
+            user.user_id, hostname
+        );
+    }
 
     Ok(HttpResponse::Ok().json(SetupStatusResponse {
         ready,
@@ -407,12 +484,16 @@ main() {{
     CONDUCTOR_URL=$(parse_json "conductor_url" "$CREDS")
     JWT_SECRET=$(parse_json "jwt_secret" "$CREDS")
     OWNER_ID=$(parse_json "owner_id" "$CREDS")
+    SETUP_NONCE=$(parse_json "setup_nonce" "$CREDS")
 
     if [ -z "$TUNNEL_TOKEN" ] || [ -z "$HOSTNAME" ]; then
         error "Failed to parse credentials response."
     fi
     if [ -z "$JWT_SECRET" ] || [ -z "$OWNER_ID" ]; then
         error "Failed to parse auth credentials."
+    fi
+    if [ -z "$SETUP_NONCE" ]; then
+        error "Failed to parse setup nonce."
     fi
 
     info "Tunnel hostname: $HOSTNAME"
@@ -466,7 +547,7 @@ main() {{
         info "Cloudflared already installed"
     fi
 
-    # Create conductor config with auth
+    # Create conductor config with auth and setup nonce
     mkdir -p "$SPOQ_DIR/config"
     cat > "$SPOQ_DIR/config/config.toml" << CFGEOF
 [server]
@@ -476,6 +557,9 @@ port = 8000
 [auth]
 jwt_secret = "$JWT_SECRET"
 owner_id = "$OWNER_ID"
+
+[setup]
+nonce = "$SETUP_NONCE"
 CFGEOF
     chmod 600 "$SPOQ_DIR/config/config.toml"
 

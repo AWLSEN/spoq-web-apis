@@ -200,6 +200,8 @@ pub struct SetupClaims {
     pub purpose: String,
     /// Username (needed for tunnel naming)
     pub username: String,
+    /// Unique nonce for verifying the correct conductor is responding
+    pub setup_nonce: String,
 }
 
 /// Creates a setup token for local conductor installation.
@@ -209,6 +211,7 @@ pub struct SetupClaims {
 pub fn create_setup_token(
     user_id: Uuid,
     username: &str,
+    setup_nonce: &str,
     secret: &str,
     expiry_secs: i64,
 ) -> Result<String, jsonwebtoken::errors::Error> {
@@ -219,6 +222,7 @@ pub fn create_setup_token(
         iat: now,
         purpose: "setup".to_string(),
         username: username.to_string(),
+        setup_nonce: setup_nonce.to_string(),
     };
     encode(
         &Header::default(),
