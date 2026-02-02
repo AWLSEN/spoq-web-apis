@@ -302,25 +302,31 @@ pub async fn get_setup_status(
 
     let health_url = format!("https://{}/health", hostname);
     let (ready, nonce_matches) = match http_client.get(&health_url).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            // Parse the health response to check nonce
-            match resp.json::<ConductorHealthResponse>().await {
-                Ok(health) => {
-                    let nonce_ok = match (&expected_nonce, &health.setup_nonce) {
-                        (Some(expected), Some(actual)) => expected == actual,
-                        (None, _) => true, // No expected nonce, accept any conductor
-                        (Some(_), None) => false, // Expected nonce but conductor doesn't have one
-                    };
-                    (nonce_ok, nonce_ok)
+        Ok(resp) => {
+            // Accept both 200 OK and 503 Service Unavailable
+            // Conductor returns 503 when "registered: false" but it's still running
+            let status = resp.status();
+            if status.is_success() || status.as_u16() == 503 {
+                // Parse the health response to check nonce
+                match resp.json::<ConductorHealthResponse>().await {
+                    Ok(health) => {
+                        let nonce_ok = match (&expected_nonce, &health.setup_nonce) {
+                            (Some(expected), Some(actual)) => expected == actual,
+                            (None, _) => true, // No expected nonce, accept any conductor
+                            (Some(_), None) => false, // Expected nonce but conductor doesn't have one
+                        };
+                        (nonce_ok, nonce_ok)
+                    }
+                    Err(_) => {
+                        // Couldn't parse response, fall back to simple status check
+                        // This handles old conductors that don't return nonce
+                        (expected_nonce.is_none(), expected_nonce.is_none())
+                    }
                 }
-                Err(_) => {
-                    // Couldn't parse response, fall back to simple status check
-                    // This handles old conductors that don't return nonce
-                    (expected_nonce.is_none(), expected_nonce.is_none())
-                }
+            } else {
+                (false, false)
             }
         }
-        Ok(_) => (false, false),
         Err(_) => (false, false),
     };
 
