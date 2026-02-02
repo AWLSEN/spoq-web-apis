@@ -952,7 +952,7 @@ impl CloudflareService {
                 let request = CreateDnsRecordRequest {
                     record_type: "CNAME".to_string(),
                     name: name.to_string(),
-                    content: tunnel_target,
+                    content: tunnel_target.clone(),
                     ttl: 1,
                     proxied: true,
                 };
