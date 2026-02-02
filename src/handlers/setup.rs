@@ -498,8 +498,21 @@ main() {{
 
     info "Tunnel hostname: $HOSTNAME"
 
-    # Download conductor
+    # Download/update conductor
+    NEED_DOWNLOAD=0
     if [ ! -x "$SPOQ_DIR/bin/conductor" ]; then
+        NEED_DOWNLOAD=1
+    else
+        # Check for updates by comparing versions
+        LOCAL_VERSION=$("$SPOQ_DIR/bin/conductor" --version 2>/dev/null | head -1 || echo "unknown")
+        REMOTE_VERSION=$(curl -fsSL "https://download.spoq.dev/conductor/latest-version" 2>/dev/null || echo "")
+        if [ -n "$REMOTE_VERSION" ] && [ "$LOCAL_VERSION" != "$REMOTE_VERSION" ]; then
+            info "Update available: $LOCAL_VERSION -> $REMOTE_VERSION"
+            NEED_DOWNLOAD=1
+        fi
+    fi
+
+    if [ "$NEED_DOWNLOAD" = "1" ]; then
         info "Downloading conductor..."
         curl -fsSL "$CONDUCTOR_URL" -o "$SPOQ_DIR/bin/conductor.tmp" || \
             error "Failed to download conductor"
@@ -507,7 +520,7 @@ main() {{
         chmod 755 "$SPOQ_DIR/bin/conductor"
         success "Conductor downloaded"
     else
-        info "Conductor already installed"
+        info "Conductor up to date ($LOCAL_VERSION)"
     fi
 
     # Download cloudflared
