@@ -202,19 +202,20 @@ pub struct SetupClaims {
     pub username: String,
 }
 
-/// Creates a short-lived setup token for local conductor installation.
+/// Creates a setup token for local conductor installation.
 ///
-/// The token expires in 5 minutes and includes a `purpose: "setup"` claim
-/// to prevent it from being used as a normal access token.
+/// The token includes a `purpose: "setup"` claim to prevent it from being
+/// used as a normal access token. The expiry is configurable via `expiry_secs`.
 pub fn create_setup_token(
     user_id: Uuid,
     username: &str,
     secret: &str,
+    expiry_secs: i64,
 ) -> Result<String, jsonwebtoken::errors::Error> {
     let now = Utc::now().timestamp();
     let claims = SetupClaims {
         sub: user_id.to_string(),
-        exp: now + 300, // 5 minutes
+        exp: now + expiry_secs,
         iat: now,
         purpose: "setup".to_string(),
         username: username.to_string(),

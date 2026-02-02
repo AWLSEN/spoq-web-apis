@@ -68,8 +68,13 @@ pub async fn create_setup_token_handler(
     let username = username
         .ok_or_else(|| AppError::Internal("User not found".to_string()))?;
 
-    let token = create_setup_token(user.user_id, &username, &app_state.config.jwt_secret)
-        .map_err(|e| AppError::Internal(format!("Failed to create setup token: {}", e)))?;
+    let token = create_setup_token(
+        user.user_id,
+        &username,
+        &app_state.config.jwt_secret,
+        app_state.config.jwt_setup_token_expiry_secs,
+    )
+    .map_err(|e| AppError::Internal(format!("Failed to create setup token: {}", e)))?;
 
     tracing::info!("Setup token created for user {} ({})", user.user_id, username);
 
@@ -116,8 +121,37 @@ pub async fn get_setup_credentials(
         format!("{}.spoq.dev", claims.username.to_lowercase())
     };
 
-    // Get or create tunnel
     let subdomain = hostname.strip_suffix(".spoq.dev").unwrap_or(&hostname);
+
+    // If user already has a tunnel, delete it first (one active device at a time).
+    // This ensures that running setup on a NEW device replaces the existing tunnel.
+    if let Some(ref existing_vps) = vps {
+        if let Some(ref old_tunnel_id) = existing_vps.tunnel_id {
+            tracing::info!(
+                "Replacing existing tunnel for user {} before new device setup: tunnel_id={}",
+                user_id,
+                old_tunnel_id
+            );
+
+            // Delete CNAME record if exists
+            if let Ok(record) = cf.find_cname_record(subdomain).await {
+                if let Err(e) = cf.delete_dns_record(&record.id).await {
+                    tracing::warn!("Failed to delete old CNAME record: {}", e);
+                } else {
+                    tracing::info!("Deleted old CNAME record for {}", subdomain);
+                }
+            }
+
+            // Delete the old tunnel
+            if let Err(e) = cf.delete_tunnel(old_tunnel_id).await {
+                tracing::warn!("Failed to delete old Cloudflare tunnel: {}", e);
+            } else {
+                tracing::info!("Deleted old Cloudflare tunnel: {}", old_tunnel_id);
+            }
+        }
+    }
+
+    // Create a fresh tunnel (always new since we deleted any existing one above)
     let tunnel_name = format!("spoq-{}", subdomain.to_lowercase());
 
     let creds = cf.get_or_create_tunnel(&tunnel_name).await.map_err(|e| {

@@ -10,6 +10,7 @@ pub struct Config {
     pub github_web_redirect_uri: String,
     pub jwt_secret: String,
     pub jwt_access_token_expiry_secs: i64,
+    pub jwt_setup_token_expiry_secs: i64,
     pub jwt_refresh_token_expiry_days: i64,
     pub host: String,
     pub port: u16,
@@ -76,6 +77,17 @@ impl Config {
             })
             .transpose()?
             .unwrap_or(900); // Default: 15 minutes
+
+        let jwt_setup_token_expiry_secs = env::var("JWT_SETUP_TOKEN_EXPIRY_SECS")
+            .ok()
+            .map(|v| {
+                v.parse::<i64>().map_err(|e| ConfigError::InvalidValue {
+                    var: "JWT_SETUP_TOKEN_EXPIRY_SECS".to_string(),
+                    message: e.to_string(),
+                })
+            })
+            .transpose()?
+            .unwrap_or(1800); // Default: 30 minutes
 
         let jwt_refresh_token_expiry_days = env::var("JWT_REFRESH_TOKEN_EXPIRY_DAYS")
             .ok()
@@ -149,6 +161,7 @@ impl Config {
             github_web_redirect_uri,
             jwt_secret,
             jwt_access_token_expiry_secs,
+            jwt_setup_token_expiry_secs,
             jwt_refresh_token_expiry_days,
             host,
             port,
