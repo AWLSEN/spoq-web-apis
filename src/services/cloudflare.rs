@@ -874,4 +874,120 @@ impl CloudflareService {
 
         Ok(creds)
     }
+
+    /// Create a fresh tunnel, replacing any existing tunnel with the same base name.
+    ///
+    /// This is the RELIABLE approach for device switching:
+    /// 1. Generate a unique tunnel name (base-name + short UUID suffix)
+    /// 2. Create the new tunnel (guaranteed fresh, no shared connections)
+    /// 3. Return credentials for the new tunnel
+    /// 4. Caller should update DNS CNAME to point to new tunnel
+    /// 5. Old tunnels become orphaned (traffic won't reach them)
+    ///
+    /// This prevents race conditions where multiple cloudflared instances
+    /// connect to the same tunnel.
+    pub async fn create_fresh_tunnel(&self, base_name: &str) -> Result<TunnelCredentials, CloudflareServiceError> {
+        // Generate unique tunnel name with short UUID suffix
+        let suffix = &uuid::Uuid::new_v4().to_string()[..8];
+        let unique_name = format!("{}-{}", base_name, suffix);
+
+        tracing::info!("Creating fresh tunnel '{}' (base: '{}')", unique_name, base_name);
+
+        let creds = self.create_tunnel(&unique_name).await?;
+
+        tracing::info!(
+            "Fresh tunnel created: id={}, name={}",
+            creds.tunnel_id, creds.tunnel_name
+        );
+
+        Ok(creds)
+    }
+
+    /// Delete a DNS record by its ID (more reliable than by name)
+    pub async fn delete_dns_record_by_id(&self, record_id: &str) -> Result<(), CloudflareServiceError> {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/dns_records/{}",
+            self.zone_id, record_id
+        );
+
+        let response = self
+            .client
+            .delete(&url)
+            .header("Authorization", format!("Bearer {}", self.api_token))
+            .send()
+            .await?;
+
+        let cf_response: CloudflareResponse<serde_json::Value> = response.json().await?;
+
+        if cf_response.success {
+            Ok(())
+        } else {
+            let error_msg = cf_response
+                .errors
+                .first()
+                .map(|e| e.message.clone())
+                .unwrap_or_else(|| "Unknown error".to_string());
+            Err(CloudflareServiceError::ApiError(error_msg))
+        }
+    }
+
+    /// Create or update a CNAME record pointing to a tunnel
+    /// Uses upsert pattern: updates existing record or creates new one
+    pub async fn upsert_cname_record(
+        &self,
+        name: &str,
+        tunnel_id: &str,
+    ) -> Result<DnsRecord, CloudflareServiceError> {
+        let tunnel_target = format!("{}.cfargotunnel.com", tunnel_id);
+
+        // Try to find existing CNAME record
+        match self.find_cname_record(name).await {
+            Ok(existing) => {
+                // Update existing record to point to new tunnel
+                let url = format!(
+                    "https://api.cloudflare.com/client/v4/zones/{}/dns_records/{}",
+                    self.zone_id, existing.id
+                );
+
+                let request = CreateDnsRecordRequest {
+                    record_type: "CNAME".to_string(),
+                    name: name.to_string(),
+                    content: tunnel_target,
+                    ttl: 1,
+                    proxied: true,
+                };
+
+                let response = self
+                    .client
+                    .put(&url)
+                    .header("Authorization", format!("Bearer {}", self.api_token))
+                    .header("Content-Type", "application/json")
+                    .json(&request)
+                    .send()
+                    .await?;
+
+                let cf_response: CloudflareResponse<DnsRecord> = response.json().await?;
+
+                if cf_response.success {
+                    tracing::info!("Updated CNAME {} -> {}", name, tunnel_target);
+                    cf_response.result.ok_or(CloudflareServiceError::ApiError(
+                        "No result in response".to_string(),
+                    ))
+                } else {
+                    let error_msg = cf_response
+                        .errors
+                        .first()
+                        .map(|e| e.message.clone())
+                        .unwrap_or_else(|| "Unknown error".to_string());
+                    Err(CloudflareServiceError::ApiError(error_msg))
+                }
+            }
+            Err(CloudflareServiceError::RecordNotFound) => {
+                // Create new CNAME record
+                tracing::info!("Creating CNAME {} -> {}", name, tunnel_target);
+                self.create_cname_record(name, tunnel_id).await
+            }
+            Err(e) => Err(e),
+        }
+    }
 }

@@ -137,40 +137,38 @@ pub async fn get_setup_credentials(
 
     let subdomain = hostname.strip_suffix(".spoq.dev").unwrap_or(&hostname);
 
-    // If user already has a tunnel, delete it first (one active device at a time).
-    // This ensures that running setup on a NEW device replaces the existing tunnel.
-    if let Some(ref existing_vps) = vps {
-        if let Some(ref old_tunnel_id) = existing_vps.tunnel_id {
-            tracing::info!(
-                "Replacing existing tunnel for user {} before new device setup: tunnel_id={}",
-                user_id,
-                old_tunnel_id
-            );
+    // RELIABLE DEVICE SWITCHING:
+    // Always create a FRESH tunnel with a unique name. This ensures:
+    // 1. No race condition with old cloudflared instances
+    // 2. Old tunnels become orphaned (DNS points to new tunnel)
+    // 3. Clean separation between devices
+    //
+    // We DON'T try to delete old tunnels first because:
+    // - Cloudflare won't delete tunnels with active connections
+    // - The old cloudflared might reconnect before we create the new one
+    // - It's simpler and more reliable to just create fresh
 
-            // Delete CNAME record if exists
-            if let Ok(record) = cf.find_cname_record(subdomain).await {
-                if let Err(e) = cf.delete_dns_record(&record.id).await {
-                    tracing::warn!("Failed to delete old CNAME record: {}", e);
-                } else {
-                    tracing::info!("Deleted old CNAME record for {}", subdomain);
-                }
-            }
+    let tunnel_base_name = format!("spoq-{}", subdomain.to_lowercase());
 
-            // Delete the old tunnel
-            if let Err(e) = cf.delete_tunnel(old_tunnel_id).await {
-                tracing::warn!("Failed to delete old Cloudflare tunnel: {}", e);
-            } else {
-                tracing::info!("Deleted old Cloudflare tunnel: {}", old_tunnel_id);
-            }
-        }
-    }
+    tracing::info!(
+        "Creating fresh tunnel for user {} (hostname: {})",
+        user_id, hostname
+    );
 
-    // Create a fresh tunnel (always new since we deleted any existing one above)
-    let tunnel_name = format!("spoq-{}", subdomain.to_lowercase());
-
-    let creds = cf.get_or_create_tunnel(&tunnel_name).await.map_err(|e| {
-        AppError::Internal(format!("Failed to get tunnel credentials: {}", e))
+    let creds = cf.create_fresh_tunnel(&tunnel_base_name).await.map_err(|e| {
+        AppError::Internal(format!("Failed to create tunnel: {}", e))
     })?;
+
+    // Update DNS CNAME to point to the NEW tunnel
+    // This is what actually "switches" traffic - old tunnel becomes orphaned
+    if let Err(e) = cf.upsert_cname_record(subdomain, &creds.tunnel_id).await {
+        tracing::error!("Failed to update CNAME record: {}", e);
+        return Err(AppError::Internal(format!("Failed to update DNS: {}", e)));
+    }
+    tracing::info!(
+        "DNS CNAME updated: {} -> {}.cfargotunnel.com",
+        hostname, creds.tunnel_id
+    );
 
     // Update tunnel ingress to point to localhost:8000 (local conductor)
     if let Err(e) = cf.update_tunnel_ingress(&creds.tunnel_id, &hostname, "http://localhost:8000").await {
