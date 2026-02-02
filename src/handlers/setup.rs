@@ -368,6 +368,19 @@ stop_process() {{
     fi
 }}
 
+# Kill all processes on a given port (aggressive cleanup)
+kill_port() {{
+    port="$1"; name="$2"
+    if command -v lsof >/dev/null 2>&1; then
+        pids=$(lsof -ti:"$port" 2>/dev/null || true)
+        if [ -n "$pids" ]; then
+            info "Killing existing processes on port $port ($name)..."
+            echo "$pids" | xargs kill -9 2>/dev/null || true
+            sleep 1
+        fi
+    fi
+}}
+
 # --- Main ---
 main() {{
     info "Setting up local conductor..."
@@ -377,9 +390,12 @@ main() {{
     mkdir -p "$SPOQ_DIR/bin" "$SPOQ_DIR/logs"
     chmod 700 "$SPOQ_DIR"
 
-    # Stop existing processes
+    # Stop existing processes (PID file based)
     stop_process "$SPOQ_DIR/conductor.pid" "conductor"
     stop_process "$SPOQ_DIR/cloudflared.pid" "cloudflared"
+
+    # Aggressive cleanup: kill anything on conductor port (handles orphaned processes)
+    kill_port 8000 "conductor"
 
     # Fetch credentials from API
     info "Fetching tunnel credentials..."
