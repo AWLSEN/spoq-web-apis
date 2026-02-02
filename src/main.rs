@@ -19,7 +19,7 @@ use spoq_web_apis::handlers::{
     list_plans, list_subscription_plans, provision_vps, reset_password, restart_vps, start_vps,
     stop_vps,
     // Setup handlers
-    create_setup_token_handler, get_setup_credentials, get_setup_status,
+    create_setup_token_handler, get_setup_credentials, get_setup_script, get_setup_status,
     // BYOVPS handlers
     get_operation, provision_byovps, replace_byovps,
     // Payment handlers
@@ -204,6 +204,7 @@ async fn main() -> std::io::Result<()> {
         app = app.route("/api/setup/token", web::post().to(create_setup_token_handler));
         app = app.route("/api/setup/credentials", web::get().to(get_setup_credentials));
         app = app.route("/api/setup/status", web::get().to(get_setup_status));
+        app = app.route("/api/setup/script", web::get().to(get_setup_script));
 
         // VPS confirm endpoint (available without Hostinger - just DB write)
         // This endpoint is called by CLI after Hostinger provisioning completes
