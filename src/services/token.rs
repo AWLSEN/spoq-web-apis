@@ -184,6 +184,66 @@ pub fn decode_access_token(
     Ok(token_data.claims)
 }
 
+/// JWT claims structure for setup tokens (local conductor setup).
+///
+/// These tokens are short-lived (5 minutes) and carry a `purpose` field
+/// to prevent reuse as normal access tokens.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SetupClaims {
+    /// Subject - the user ID as a string
+    pub sub: String,
+    /// Expiration time as Unix timestamp
+    pub exp: i64,
+    /// Issued at time as Unix timestamp
+    pub iat: i64,
+    /// Token purpose - must be "setup"
+    pub purpose: String,
+    /// Username (needed for tunnel naming)
+    pub username: String,
+}
+
+/// Creates a short-lived setup token for local conductor installation.
+///
+/// The token expires in 5 minutes and includes a `purpose: "setup"` claim
+/// to prevent it from being used as a normal access token.
+pub fn create_setup_token(
+    user_id: Uuid,
+    username: &str,
+    secret: &str,
+) -> Result<String, jsonwebtoken::errors::Error> {
+    let now = Utc::now().timestamp();
+    let claims = SetupClaims {
+        sub: user_id.to_string(),
+        exp: now + 300, // 5 minutes
+        iat: now,
+        purpose: "setup".to_string(),
+        username: username.to_string(),
+    };
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+}
+
+/// Decodes and validates a setup token.
+///
+/// Verifies the JWT signature, expiry, and that `purpose == "setup"`.
+pub fn decode_setup_token(
+    token: &str,
+    secret: &str,
+) -> Result<SetupClaims, jsonwebtoken::errors::Error> {
+    let token_data = decode::<SetupClaims>(
+        token,
+        &DecodingKey::from_secret(secret.as_bytes()),
+        &Validation::default(),
+    )?;
+    if token_data.claims.purpose != "setup" {
+        return Err(jsonwebtoken::errors::ErrorKind::InvalidAudience.into());
+    }
+    Ok(token_data.claims)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

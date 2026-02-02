@@ -18,6 +18,8 @@ use spoq_web_apis::handlers::{
     confirm_vps, get_tunnel_credentials, get_vps_precheck, get_vps_status, list_datacenters,
     list_plans, list_subscription_plans, provision_vps, reset_password, restart_vps, start_vps,
     stop_vps,
+    // Setup handlers
+    create_setup_token_handler, get_setup_credentials, get_setup_status,
     // BYOVPS handlers
     get_operation, provision_byovps, replace_byovps,
     // Payment handlers
@@ -197,6 +199,11 @@ async fn main() -> std::io::Result<()> {
         // This endpoint is used by the CLI for Step 1: PRE-CHECK
         app = app.route("/api/vps/precheck", web::get().to(get_vps_precheck));
         app = app.route("/api/tunnel/credentials", web::get().to(get_tunnel_credentials));
+
+        // Setup endpoints for web-based local conductor installation
+        app = app.route("/api/setup/token", web::post().to(create_setup_token_handler));
+        app = app.route("/api/setup/credentials", web::get().to(get_setup_credentials));
+        app = app.route("/api/setup/status", web::get().to(get_setup_status));
 
         // VPS confirm endpoint (available without Hostinger - just DB write)
         // This endpoint is called by CLI after Hostinger provisioning completes

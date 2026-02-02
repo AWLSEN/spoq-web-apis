@@ -12,6 +12,7 @@ pub mod byovps;
 pub mod health;
 pub mod payment;
 pub mod vps;
+pub mod setup;
 pub mod webhooks;
 
 // Re-export commonly used types
@@ -37,5 +38,9 @@ pub use payment::{
     create_checkout_session, create_portal_session, get_session_status, payment_cancel,
     payment_success, portal_return, CheckoutSessionResponse, CreateCheckoutRequest,
     PaymentStatusResponse,
+};
+pub use setup::{
+    create_setup_token_handler, get_setup_credentials, get_setup_status,
+    SetupCredentialsResponse, SetupStatusResponse, SetupTokenResponse,
 };
 pub use webhooks::stripe_webhook;
