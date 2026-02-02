@@ -1123,3 +1123,84 @@ pub async fn reset_password(
         message: "Password reset successful. Use the new password for SSH.".to_string(),
     }))
 }
+
+// ---------------------------------------------------------------------------
+// Tunnel credentials (authenticated)
+// ---------------------------------------------------------------------------
+
+/// Response containing tunnel credentials for cloudflared authentication
+#[derive(Debug, Serialize)]
+pub struct TunnelCredentialsResponse {
+    pub tunnel_id: String,
+    pub tunnel_token: String,
+    pub hostname: String,
+}
+
+/// Get tunnel credentials for the authenticated user
+///
+/// Returns the tunnel token that can be used with `cloudflared tunnel run --token <token>`.
+/// If the user has an existing tunnel, its token is returned. If no tunnel exists,
+/// one is created using the user's hostname.
+///
+/// GET /api/tunnel/credentials
+pub async fn get_tunnel_credentials(
+    user: AuthenticatedUser,
+    pool: web::Data<PgPool>,
+    cloudflare: Option<web::Data<CloudflareService>>,
+) -> AppResult<HttpResponse> {
+    let cf = cloudflare.ok_or_else(|| {
+        AppError::Internal("Cloudflare service not configured".to_string())
+    })?;
+
+    // Look up user's VPS record (any non-terminated)
+    let vps: Option<UserVps> = sqlx::query_as(
+        "SELECT * FROM user_vps WHERE user_id = $1 AND status NOT IN ('terminated') ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(user.user_id)
+    .fetch_optional(pool.get_ref())
+    .await?;
+
+    let vps = vps.ok_or_else(|| {
+        AppError::NotFound("No VPS record found. Provision a VPS first.".to_string())
+    })?;
+
+    let hostname = vps.hostname.clone();
+    if hostname.is_empty() {
+        return Err(AppError::Internal("VPS has no hostname configured".to_string()));
+    }
+
+    // Extract subdomain for tunnel name (e.g., "alice" from "alice.spoq.dev")
+    let subdomain = hostname
+        .strip_suffix(".spoq.dev")
+        .unwrap_or(&hostname);
+    let tunnel_name = format!("spoq-{}", subdomain.to_lowercase());
+
+    // Get or create tunnel and retrieve token
+    let creds = cf.get_or_create_tunnel(&tunnel_name).await.map_err(|e| {
+        AppError::Internal(format!("Failed to get tunnel credentials: {}", e))
+    })?;
+
+    // If tunnel_id wasn't stored in DB yet, store it now
+    if vps.tunnel_id.is_none() {
+        if let Err(e) = sqlx::query("UPDATE user_vps SET tunnel_id = $1 WHERE id = $2 AND user_id = $3")
+            .bind(&creds.tunnel_id)
+            .bind(vps.id)
+            .bind(user.user_id)
+            .execute(pool.get_ref())
+            .await
+        {
+            tracing::warn!("Failed to store tunnel_id in database: {}", e);
+        }
+    }
+
+    tracing::info!(
+        "Tunnel credentials retrieved for user {} (tunnel: {}, hostname: {})",
+        user.user_id, creds.tunnel_id, hostname
+    );
+
+    Ok(HttpResponse::Ok().json(TunnelCredentialsResponse {
+        tunnel_id: creds.tunnel_id,
+        tunnel_token: creds.token,
+        hostname,
+    }))
+}

@@ -24,10 +24,10 @@ pub use auth::{
 };
 pub use health::{health_check, HealthResponse};
 pub use vps::{
-    confirm_vps, get_vps_precheck, get_vps_status, list_datacenters, list_plans,
-    list_subscription_plans, provision_vps, reset_password, restart_vps, start_vps, stop_vps,
-    ConfirmVpsRequest, ConfirmVpsResponse, DataCentersResponse, ResetPasswordRequest,
-    SuccessResponse, VpsPlansResponse,
+    confirm_vps, get_tunnel_credentials, get_vps_precheck, get_vps_status, list_datacenters,
+    list_plans, list_subscription_plans, provision_vps, reset_password, restart_vps, start_vps,
+    stop_vps, ConfirmVpsRequest, ConfirmVpsResponse, DataCentersResponse, ResetPasswordRequest,
+    SuccessResponse, TunnelCredentialsResponse, VpsPlansResponse,
 };
 pub use byovps::{
     get_operation, provision_byovps, replace_byovps, ByovpsAsyncResponse, ByovpsPendingResponse,

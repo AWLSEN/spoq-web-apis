@@ -758,6 +758,91 @@ impl CloudflareService {
         }
     }
 
+    /// Update a tunnel's ingress configuration
+    /// This changes where the tunnel routes traffic without recreating it
+    pub async fn update_tunnel_ingress(
+        &self,
+        tunnel_id: &str,
+        hostname: &str,
+        origin: &str,
+    ) -> Result<(), CloudflareServiceError> {
+        let account_id = self
+            .account_id
+            .as_ref()
+            .ok_or(CloudflareServiceError::AccountIdNotConfigured)?;
+
+        if tunnel_id.is_empty() {
+            return Err(CloudflareServiceError::ApiError(
+                "tunnel_id cannot be empty".to_string(),
+            ));
+        }
+
+        // Validate hostname matches expected pattern
+        if !hostname.ends_with(".spoq.dev") {
+            return Err(CloudflareServiceError::ApiError(
+                format!("Invalid hostname: {} (must end with .spoq.dev)", hostname),
+            ));
+        }
+
+        // Validate origin is a valid URL
+        if !origin.starts_with("http://") && !origin.starts_with("https://") {
+            return Err(CloudflareServiceError::ApiError(
+                format!("Invalid origin URL: {} (must start with http:// or https://)", origin),
+            ));
+        }
+
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/accounts/{}/cfd_tunnel/{}/configurations",
+            account_id, tunnel_id
+        );
+
+        let body = serde_json::json!({
+            "config": {
+                "ingress": [
+                    {
+                        "hostname": hostname,
+                        "service": origin,
+                        "originRequest": {}
+                    },
+                    {
+                        "service": "http_status:404"
+                    }
+                ]
+            }
+        });
+
+        tracing::info!(
+            "Updating tunnel {} ingress: {} -> {}",
+            tunnel_id, hostname, origin
+        );
+
+        let response = self
+            .client
+            .put(&url)
+            .header("Authorization", format!("Bearer {}", self.api_token))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        let cf_response: CloudflareResponse<serde_json::Value> = response.json().await?;
+
+        if cf_response.success {
+            tracing::info!(
+                "Tunnel {} ingress updated successfully: {} -> {}",
+                tunnel_id, hostname, origin
+            );
+            Ok(())
+        } else {
+            let error_msg = cf_response
+                .errors
+                .first()
+                .map(|e| e.message.clone())
+                .unwrap_or_else(|| "Unknown error".to_string());
+            Err(CloudflareServiceError::ApiError(error_msg))
+        }
+    }
+
     /// Get or create a tunnel by name
     /// If tunnel exists, fetches its token. If not, creates a new tunnel.
     /// Returns TunnelCredentials with the token for cloudflared authentication.
