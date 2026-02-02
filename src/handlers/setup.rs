@@ -38,6 +38,8 @@ pub struct SetupCredentialsResponse {
     pub tunnel_token: String,
     pub hostname: String,
     pub conductor_url: String,
+    pub jwt_secret: String,
+    pub owner_id: String,
 }
 
 /// Response for setup status check
@@ -213,6 +215,8 @@ pub async fn get_setup_credentials(
         tunnel_token: creds.token,
         hostname,
         conductor_url,
+        jwt_secret: app_state.config.jwt_secret.clone(),
+        owner_id: user_id.to_string(),
     }))
 }
 
@@ -385,9 +389,14 @@ main() {{
     TUNNEL_TOKEN=$(parse_json "tunnel_token" "$CREDS")
     HOSTNAME=$(parse_json "hostname" "$CREDS")
     CONDUCTOR_URL=$(parse_json "conductor_url" "$CREDS")
+    JWT_SECRET=$(parse_json "jwt_secret" "$CREDS")
+    OWNER_ID=$(parse_json "owner_id" "$CREDS")
 
     if [ -z "$TUNNEL_TOKEN" ] || [ -z "$HOSTNAME" ]; then
         error "Failed to parse credentials response."
+    fi
+    if [ -z "$JWT_SECRET" ] || [ -z "$OWNER_ID" ]; then
+        error "Failed to parse auth credentials."
     fi
 
     info "Tunnel hostname: $HOSTNAME"
@@ -441,8 +450,24 @@ main() {{
         info "Cloudflared already installed"
     fi
 
-    # Start conductor
+    # Create conductor config with auth
+    mkdir -p "$SPOQ_DIR/config"
+    cat > "$SPOQ_DIR/config/config.toml" << CFGEOF
+[server]
+host = "0.0.0.0"
+port = 8000
+
+[auth]
+jwt_secret = "$JWT_SECRET"
+owner_id = "$OWNER_ID"
+CFGEOF
+    chmod 600 "$SPOQ_DIR/config/config.toml"
+
+    # Start conductor with auth env vars
     info "Starting conductor..."
+    CONDUCTOR_AUTH__JWT_SECRET="$JWT_SECRET" \
+    CONDUCTOR_AUTH__OWNER_ID="$OWNER_ID" \
+    CONDUCTOR_SERVER__PORT=8000 \
     nohup "$SPOQ_DIR/bin/conductor" > "$SPOQ_DIR/logs/conductor.log" 2>&1 &
     CONDUCTOR_PID=$!
     echo "$CONDUCTOR_PID" > "$SPOQ_DIR/conductor.pid"
