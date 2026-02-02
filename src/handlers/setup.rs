@@ -586,11 +586,11 @@ CFGEOF
     echo "$CONDUCTOR_PID" > "$SPOQ_DIR/conductor.pid"
     chmod 600 "$SPOQ_DIR/conductor.pid"
 
-    # Wait for conductor health
+    # Wait for conductor health (accept any response, including 503 "initializing")
     info "Waiting for conductor to start..."
     RETRIES=0
     while [ $RETRIES -lt 10 ]; do
-        if curl -fsSo /dev/null "http://localhost:8000/health" 2>/dev/null; then
+        if curl -sSo /dev/null "http://localhost:8000/health" 2>/dev/null; then
             success "Conductor is running"
             break
         fi
