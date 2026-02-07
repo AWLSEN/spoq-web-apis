@@ -504,7 +504,12 @@ main() {{
     mkdir -p "$SPOQ_DIR/bin" "$SPOQ_DIR/logs"
     chmod 700 "$SPOQ_DIR"
 
-    # Stop existing processes (PID file based)
+    # Stop existing processes
+    if [ "$PLATFORM" != "${{PLATFORM##darwin}}" ]; then
+        # macOS: unload launchd services if they exist
+        launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/dev.spoq.conductor.plist 2>/dev/null || true
+        launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/dev.spoq.cloudflared.plist 2>/dev/null || true
+    fi
     stop_process "$SPOQ_DIR/conductor.pid" "conductor"
     stop_process "$SPOQ_DIR/cloudflared.pid" "cloudflared"
 
@@ -613,15 +618,58 @@ nonce = "$SETUP_NONCE"
 CFGEOF
     chmod 600 "$SPOQ_DIR/config/config.toml"
 
-    # Start conductor with auth env vars
+    # Start conductor with auto-restart
     info "Starting conductor..."
-    CONDUCTOR_AUTH__JWT_SECRET="$JWT_SECRET" \
-    CONDUCTOR_AUTH__OWNER_ID="$OWNER_ID" \
-    CONDUCTOR_SERVER__PORT=8000 \
-    nohup "$SPOQ_DIR/bin/conductor" > "$SPOQ_DIR/logs/conductor.log" 2>&1 &
-    CONDUCTOR_PID=$!
-    echo "$CONDUCTOR_PID" > "$SPOQ_DIR/conductor.pid"
-    chmod 600 "$SPOQ_DIR/conductor.pid"
+    if [ "$PLATFORM" != "${{PLATFORM##darwin}}" ]; then
+        # macOS: use launchd for auto-restart on crash/reboot
+        mkdir -p ~/Library/LaunchAgents
+        cat > ~/Library/LaunchAgents/dev.spoq.conductor.plist << LPEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.spoq.conductor</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$SPOQ_DIR/bin/conductor</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>$SPOQ_DIR</string>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>RUST_LOG</key>
+        <string>info</string>
+        <key>CONDUCTOR_AUTH__JWT_SECRET</key>
+        <string>$JWT_SECRET</string>
+        <key>CONDUCTOR_AUTH__OWNER_ID</key>
+        <string>$OWNER_ID</string>
+        <key>CONDUCTOR_SERVER__PORT</key>
+        <string>8000</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>$SPOQ_DIR/logs/conductor.log</string>
+    <key>StandardErrorPath</key>
+    <string>$SPOQ_DIR/logs/conductor.log</string>
+</dict>
+</plist>
+LPEOF
+        launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/dev.spoq.conductor.plist 2>/dev/null || true
+        launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.spoq.conductor.plist
+    else
+        # Linux: nohup + PID file (existing behavior)
+        CONDUCTOR_AUTH__JWT_SECRET="$JWT_SECRET" \
+        CONDUCTOR_AUTH__OWNER_ID="$OWNER_ID" \
+        CONDUCTOR_SERVER__PORT=8000 \
+        nohup "$SPOQ_DIR/bin/conductor" > "$SPOQ_DIR/logs/conductor.log" 2>&1 &
+        CONDUCTOR_PID=$!
+        echo "$CONDUCTOR_PID" > "$SPOQ_DIR/conductor.pid"
+        chmod 600 "$SPOQ_DIR/conductor.pid"
+    fi
 
     # Wait for conductor health (accept any response, including 503 "initializing")
     info "Waiting for conductor to start..."
@@ -638,13 +686,47 @@ CFGEOF
         error "Conductor failed to start. Check $SPOQ_DIR/logs/conductor.log"
     fi
 
-    # Start cloudflared
+    # Start cloudflared with auto-restart
     info "Starting tunnel..."
-    nohup "$SPOQ_DIR/bin/cloudflared" tunnel --no-autoupdate run --token "$TUNNEL_TOKEN" \
-        > "$SPOQ_DIR/logs/cloudflared.log" 2>&1 &
-    CF_PID=$!
-    echo "$CF_PID" > "$SPOQ_DIR/cloudflared.pid"
-    chmod 600 "$SPOQ_DIR/cloudflared.pid"
+    if [ "$PLATFORM" != "${{PLATFORM##darwin}}" ]; then
+        # macOS: use launchd for auto-restart
+        cat > ~/Library/LaunchAgents/dev.spoq.cloudflared.plist << LCFEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.spoq.cloudflared</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$SPOQ_DIR/bin/cloudflared</string>
+        <string>tunnel</string>
+        <string>--no-autoupdate</string>
+        <string>run</string>
+        <string>--token</string>
+        <string>$TUNNEL_TOKEN</string>
+    </array>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>StandardOutPath</key>
+    <string>$SPOQ_DIR/logs/cloudflared.log</string>
+    <key>StandardErrorPath</key>
+    <string>$SPOQ_DIR/logs/cloudflared.log</string>
+</dict>
+</plist>
+LCFEOF
+        launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/dev.spoq.cloudflared.plist 2>/dev/null || true
+        launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.spoq.cloudflared.plist
+    else
+        # Linux: nohup + PID file (existing behavior)
+        nohup "$SPOQ_DIR/bin/cloudflared" tunnel --no-autoupdate run --token "$TUNNEL_TOKEN" \
+            > "$SPOQ_DIR/logs/cloudflared.log" 2>&1 &
+        CF_PID=$!
+        echo "$CF_PID" > "$SPOQ_DIR/cloudflared.pid"
+        chmod 600 "$SPOQ_DIR/cloudflared.pid"
+    fi
 
     # Wait for tunnel to be ready
     info "Waiting for tunnel to connect..."

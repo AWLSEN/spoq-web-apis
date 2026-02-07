@@ -575,21 +575,46 @@ TUNNEL_TOKEN="{tunnel_token}"
 
 echo "=== Spoq VPS Provisioning ==="
 
+# Detect OS
+SPOQ_OS=$(uname -s)
+echo "Detected OS: $SPOQ_OS"
+
 # 1. System updates
-apt-get update && apt-get upgrade -y
+if [ "$SPOQ_OS" = "Linux" ]; then
+    apt-get update && apt-get upgrade -y
+elif [ "$SPOQ_OS" = "Darwin" ]; then
+    echo "macOS detected — skipping apt-get updates"
+fi
 
 # 2. Install dependencies
-apt-get install -y curl jq ca-certificates
+if [ "$SPOQ_OS" = "Linux" ]; then
+    apt-get install -y curl jq ca-certificates
+elif [ "$SPOQ_OS" = "Darwin" ]; then
+    # Ensure Homebrew is available, install missing deps
+    if ! command -v brew >/dev/null 2>&1; then
+        echo "ERROR: Homebrew is required on macOS. Install from https://brew.sh"
+        exit 1
+    fi
+    command -v jq >/dev/null 2>&1 || brew install jq
+fi
 
 # 2a. Install GitHub CLI
-curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-apt-get update && apt-get install -y gh
+if [ "$SPOQ_OS" = "Linux" ]; then
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+    chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+    apt-get update && apt-get install -y gh
+elif [ "$SPOQ_OS" = "Darwin" ]; then
+    command -v gh >/dev/null 2>&1 || brew install gh
+fi
 
 # 2b. Install Node.js (required for Codex CLI)
-curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-apt-get install -y nodejs
+if [ "$SPOQ_OS" = "Linux" ]; then
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    apt-get install -y nodejs
+elif [ "$SPOQ_OS" = "Darwin" ]; then
+    command -v node >/dev/null 2>&1 || brew install node@20
+fi
 
 # 2c. Install Codex CLI via npm (stable)
 echo "Installing Codex CLI via npm..."
@@ -601,32 +626,44 @@ echo "Installing Claude Code CLI (stable)..."
 curl -fsSL https://claude.ai/install.sh | bash -s stable
 
 # Add ~/.local/bin to PATH and create symlink
-export PATH="/root/.local/bin:$PATH"
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> /root/.bashrc
+HOME_DIR=$(eval echo "~")
+export PATH="$HOME_DIR/.local/bin:$PATH"
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME_DIR/.bashrc" 2>/dev/null || \
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME_DIR/.zshrc" 2>/dev/null || true
 
 # Create symlink for system-wide access
-if [ -f "/root/.local/bin/claude" ]; then
-    ln -sf /root/.local/bin/claude /usr/local/bin/claude
+if [ -f "$HOME_DIR/.local/bin/claude" ]; then
+    ln -sf "$HOME_DIR/.local/bin/claude" /usr/local/bin/claude 2>/dev/null || true
     echo "Claude CLI installed: $(claude --version)"
 else
     echo "WARNING: Claude CLI installation may have failed"
 fi
 
 # 3. Set system hostname
-hostnamectl set-hostname "$HOSTNAME"
-# Update /etc/hosts to resolve new hostname
-echo "127.0.1.1 $HOSTNAME" >> /etc/hosts
+if [ "$SPOQ_OS" = "Linux" ]; then
+    hostnamectl set-hostname "$HOSTNAME"
+    echo "127.0.1.1 $HOSTNAME" >> /etc/hosts
+elif [ "$SPOQ_OS" = "Darwin" ]; then
+    sudo scutil --set HostName "$HOSTNAME"
+    sudo scutil --set LocalHostName "$(echo "$HOSTNAME" | sed 's/\./-/g')"
+fi
 
 # 4. Set root password for SSH access
-echo "root:$SSH_PASSWORD" | chpasswd
+if [ "$SPOQ_OS" = "Linux" ]; then
+    echo "root:$SSH_PASSWORD" | chpasswd
+elif [ "$SPOQ_OS" = "Darwin" ]; then
+    echo "macOS detected — skipping root password change"
+fi
 
 # 6. Download and install Conductor (auto-detects platform: x86_64 or aarch64)
 echo "Preparing for Conductor installation..."
 
 # Stop any running conductor service from previous attempts
-if systemctl is-active --quiet conductor; then
+if [ "$SPOQ_OS" = "Linux" ] && systemctl is-active --quiet conductor; then
     echo "Stopping existing conductor service..."
     systemctl stop conductor || true
+elif [ "$SPOQ_OS" = "Darwin" ]; then
+    launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/dev.spoq.conductor.plist 2>/dev/null || true
 fi
 
 # Clean up any existing installation to ensure fresh install
@@ -683,8 +720,47 @@ cat > /etc/spoq/vps.marker << EOF
 }}
 EOF
 
-# 10. Create Conductor systemd service
-cat > /etc/systemd/system/conductor.service << SERVICEEOF
+# 10. Create Conductor service (systemd on Linux, launchd on macOS)
+if [ "$SPOQ_OS" = "Darwin" ]; then
+    mkdir -p ~/Library/LaunchAgents
+    cat > ~/Library/LaunchAgents/dev.spoq.conductor.plist << PLISTEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.spoq.conductor</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/spoq/bin/conductor</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/opt/spoq</string>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>RUST_LOG</key>
+        <string>info</string>
+        <key>CONDUCTOR_AUTH__JWT_SECRET</key>
+        <string>$JWT_SECRET</string>
+        <key>CONDUCTOR_AUTH__OWNER_ID</key>
+        <string>$OWNER_ID</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/var/log/spoq-conductor.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/spoq-conductor.log</string>
+</dict>
+</plist>
+PLISTEOF
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.spoq.conductor.plist
+else
+    cat > /etc/systemd/system/conductor.service << SERVICEEOF
 [Unit]
 Description=Spoq Conductor - AI Backend Service
 After=network.target
@@ -706,9 +782,10 @@ Environment="PATH=/usr/local/bin:/usr/bin:/bin"
 WantedBy=multi-user.target
 SERVICEEOF
 
-systemctl daemon-reload
-systemctl enable conductor
-systemctl start conductor
+    systemctl daemon-reload
+    systemctl enable conductor
+    systemctl start conductor
+fi
 
 # 11. Download and install Spoq CLI
 curl -fsSL https://download.spoq.dev/cli | bash
@@ -726,38 +803,89 @@ fi
 BASHRC
 
 # 13. Configure firewall (SSH only - cloudflared tunnel is outbound-only)
-ufw allow 22    # SSH
-ufw --force enable
+if [ "$SPOQ_OS" = "Linux" ]; then
+    ufw allow 22    # SSH
+    ufw --force enable
+elif [ "$SPOQ_OS" = "Darwin" ]; then
+    echo "macOS detected — skipping ufw firewall setup"
+fi
 
 # 14. Install cloudflared
 echo "Installing cloudflared..."
-ARCH=$(dpkg --print-architecture)
-if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
-    curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb -o /tmp/cloudflared.deb
-else
-    curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cloudflared.deb
+if [ "$SPOQ_OS" = "Linux" ]; then
+    ARCH=$(dpkg --print-architecture)
+    if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
+        curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb -o /tmp/cloudflared.deb
+    else
+        curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cloudflared.deb
+    fi
+    dpkg -i /tmp/cloudflared.deb
+    rm /tmp/cloudflared.deb
+elif [ "$SPOQ_OS" = "Darwin" ]; then
+    command -v cloudflared >/dev/null 2>&1 || brew install cloudflared
 fi
-dpkg -i /tmp/cloudflared.deb
-rm /tmp/cloudflared.deb
 
 # 15. Configure cloudflared with token-based auth
-mkdir -p /etc/cloudflared
-
-# Store tunnel token securely
-echo "$TUNNEL_TOKEN" > /etc/cloudflared/tunnel-token
-chmod 600 /etc/cloudflared/tunnel-token
-
-# Create config with ingress rules
-cat > /etc/cloudflared/config.yml << CFCONFIG
+if [ "$SPOQ_OS" = "Linux" ]; then
+    mkdir -p /etc/cloudflared
+    echo "$TUNNEL_TOKEN" > /etc/cloudflared/tunnel-token
+    chmod 600 /etc/cloudflared/tunnel-token
+    cat > /etc/cloudflared/config.yml << CFCONFIG
 ingress:
   - hostname: $HOSTNAME
     service: http://localhost:8080
   - service: http_status:404
 CFCONFIG
-chmod 600 /etc/cloudflared/config.yml
+    chmod 600 /etc/cloudflared/config.yml
+elif [ "$SPOQ_OS" = "Darwin" ]; then
+    mkdir -p ~/.cloudflared
+    echo "$TUNNEL_TOKEN" > ~/.cloudflared/tunnel-token
+    chmod 600 ~/.cloudflared/tunnel-token
+    cat > ~/.cloudflared/config.yml << CFCONFIG
+ingress:
+  - hostname: $HOSTNAME
+    service: http://localhost:8080
+  - service: http_status:404
+CFCONFIG
+    chmod 600 ~/.cloudflared/config.yml
+fi
 
-# 16. Create cloudflared systemd service with token auth
-cat > /etc/systemd/system/cloudflared.service << CLOUDFLAREDSERVICE
+# 16. Create cloudflared service (systemd on Linux, launchd on macOS)
+if [ "$SPOQ_OS" = "Darwin" ]; then
+    CF_BIN=$(command -v cloudflared)
+    cat > ~/Library/LaunchAgents/dev.spoq.cloudflared.plist << CFPLISTEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.spoq.cloudflared</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$CF_BIN</string>
+        <string>--no-autoupdate</string>
+        <string>--config</string>
+        <string>$HOME/.cloudflared/config.yml</string>
+        <string>tunnel</string>
+        <string>run</string>
+        <string>--token</string>
+        <string>$TUNNEL_TOKEN</string>
+    </array>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>StandardOutPath</key>
+    <string>/var/log/spoq-cloudflared.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/spoq-cloudflared.log</string>
+</dict>
+</plist>
+CFPLISTEOF
+    launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/dev.spoq.cloudflared.plist 2>/dev/null || true
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.spoq.cloudflared.plist
+else
+    cat > /etc/systemd/system/cloudflared.service << CLOUDFLAREDSERVICE
 [Unit]
 Description=cloudflared tunnel
 After=network.target
@@ -772,32 +900,53 @@ RestartSec=5
 WantedBy=multi-user.target
 CLOUDFLAREDSERVICE
 
-# 17. Start cloudflared service
-systemctl daemon-reload
-systemctl enable cloudflared
-systemctl start cloudflared
+    # 17. Start cloudflared service
+    systemctl daemon-reload
+    systemctl enable cloudflared
+    systemctl start cloudflared
+fi
 
 # Wait a few seconds for services to fully start
 sleep 5
 
 echo "=== Provisioning Complete ==="
-echo "Conductor: $(systemctl is-active conductor)"
-echo "Cloudflared: $(systemctl is-active cloudflared)"
 
-# If Conductor isn't active, show the error and exit with failure
-if [ "$(systemctl is-active conductor)" != "active" ]; then
-    echo ""
-    echo "=== Conductor Error Log ==="
-    journalctl -u conductor -n 20 --no-pager || echo "Could not retrieve logs"
-    exit 1
-fi
+# Verification (OS-aware)
+if [ "$SPOQ_OS" = "Darwin" ]; then
+    # On macOS, check if processes are running
+    if pgrep -x conductor >/dev/null 2>&1; then
+        echo "Conductor: running"
+    else
+        echo "Conductor: not running"
+        echo "=== Conductor Error Log ==="
+        cat /var/log/spoq-conductor.log 2>/dev/null | tail -20 || echo "No logs found"
+        exit 1
+    fi
+    if pgrep -x cloudflared >/dev/null 2>&1; then
+        echo "Cloudflared: running"
+    else
+        echo "Cloudflared: not running"
+        echo "=== Cloudflared Error Log ==="
+        cat /var/log/spoq-cloudflared.log 2>/dev/null | tail -20 || echo "No logs found"
+        exit 1
+    fi
+else
+    echo "Conductor: $(systemctl is-active conductor)"
+    echo "Cloudflared: $(systemctl is-active cloudflared)"
 
-# If cloudflared isn't active, show the error and exit with failure
-if [ "$(systemctl is-active cloudflared)" != "active" ]; then
-    echo ""
-    echo "=== Cloudflared Error Log ==="
-    journalctl -u cloudflared -n 20 --no-pager || echo "Could not retrieve logs"
-    exit 1
+    if [ "$(systemctl is-active conductor)" != "active" ]; then
+        echo ""
+        echo "=== Conductor Error Log ==="
+        journalctl -u conductor -n 20 --no-pager || echo "Could not retrieve logs"
+        exit 1
+    fi
+
+    if [ "$(systemctl is-active cloudflared)" != "active" ]; then
+        echo ""
+        echo "=== Cloudflared Error Log ==="
+        journalctl -u cloudflared -n 20 --no-pager || echo "Could not retrieve logs"
+        exit 1
+    fi
 fi
 
 # Explicitly exit with success code
@@ -830,17 +979,33 @@ mod tests {
         };
         let script = generate_post_install_script(&params);
 
+        // OS detection
+        assert!(script.contains("SPOQ_OS=$(uname -s)"));
+
         // Basic parameters
         assert!(script.contains("TestPassword123!"));
         assert!(script.contains("test.spoq.dev"));
         assert!(script.contains("[auth]"));  // auth section in config
         assert!(script.contains("jwt_secret"));
         assert!(script.contains("owner_id"));
-        assert!(script.contains("systemctl enable conductor"));
 
-        // Cloudflared installation
+        // Linux branch: systemd
+        assert!(script.contains("systemctl enable conductor"));
+        assert!(script.contains("systemctl enable cloudflared"));
+        assert!(script.contains("systemctl start cloudflared"));
+
+        // macOS branch: launchd
+        assert!(script.contains("dev.spoq.conductor.plist"));
+        assert!(script.contains("dev.spoq.cloudflared.plist"));
+        assert!(script.contains("<key>KeepAlive</key>"));
+        assert!(script.contains("launchctl bootstrap"));
+
+        // Cloudflared installation (Linux)
         assert!(script.contains("cloudflared-linux-amd64.deb"));
         assert!(script.contains("dpkg -i /tmp/cloudflared.deb"));
+
+        // Cloudflared installation (macOS)
+        assert!(script.contains("brew install cloudflared"));
 
         // Token-based tunnel auth
         assert!(script.contains("test-tunnel-id-123"));
@@ -848,14 +1013,9 @@ mod tests {
         assert!(script.contains("--token"));
 
         // Cloudflared config
-        assert!(script.contains("/etc/cloudflared/config.yml"));
         assert!(script.contains("hostname: $HOSTNAME"));
         assert!(script.contains("service: http://localhost:8080"));
         assert!(script.contains("http_status:404"));
-
-        // Cloudflared service (custom, not cloudflared service install)
-        assert!(script.contains("systemctl enable cloudflared"));
-        assert!(script.contains("systemctl start cloudflared"));
 
         // Should NOT contain Caddy
         assert!(!script.contains("caddy"));
