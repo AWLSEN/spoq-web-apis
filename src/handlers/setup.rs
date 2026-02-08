@@ -8,6 +8,7 @@
 use actix_web::{web, HttpResponse};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::time::Duration;
 
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthenticatedUser;
@@ -239,22 +240,26 @@ pub struct SetupStatusQuery {
     pub setup_token: Option<String>,
 }
 
+/// Health response from conductor with optional nonce
+#[derive(Debug, Deserialize)]
+struct ConductorHealthResponse {
+    pub status: String,
+    #[serde(default)]
+    pub setup_nonce: Option<String>,
+}
+
 /// Check if the user's local conductor tunnel is healthy.
 ///
 /// GET /api/setup/status
 ///
-/// Requires authentication. Uses the Cloudflare API to check tunnel connectivity
-/// directly, bypassing the Cloudflare proxy/WAF which blocks server-to-server
-/// HTTP requests with 403 Forbidden (Bot Fight Mode).
-///
-/// Each setup creates a fresh tunnel with a unique ID, so if that specific tunnel
-/// is connected ("healthy"), the correct conductor is definitionally running.
+/// Requires authentication. Checks the tunnel health by making an HTTP
+/// request to the user's hostname. If a setup_token query param is provided,
+/// extracts the expected nonce and verifies it matches the conductor's response.
 pub async fn get_setup_status(
     user: AuthenticatedUser,
-    _query: web::Query<SetupStatusQuery>,
+    query: web::Query<SetupStatusQuery>,
     pool: web::Data<PgPool>,
-    _app_state: web::Data<AppState>,
-    cloudflare: Option<web::Data<CloudflareService>>,
+    app_state: web::Data<AppState>,
 ) -> AppResult<HttpResponse> {
     let vps: Option<UserVps> = sqlx::query_as(
         "SELECT * FROM user_vps WHERE user_id = $1 AND status NOT IN ('terminated') ORDER BY created_at DESC LIMIT 1",
@@ -275,59 +280,97 @@ pub async fn get_setup_status(
 
     let hostname = vps.hostname.clone();
 
-    // Check tunnel status via Cloudflare API (bypasses proxy/WAF)
-    let tunnel_id = match &vps.tunnel_id {
-        Some(id) if !id.is_empty() => id.clone(),
-        _ => {
-            tracing::info!(
-                "Setup status check: no tunnel_id for user {}, not ready",
-                user.user_id
-            );
-            return Ok(HttpResponse::Ok().json(SetupStatusResponse {
-                ready: false,
-                hostname: Some(hostname),
-            }));
+    // Extract expected nonce from setup token if provided
+    let expected_nonce = if let Some(ref token) = query.setup_token {
+        match decode_setup_token(token, &app_state.config.jwt_secret) {
+            Ok(claims) => {
+                tracing::info!("Setup status check: extracted nonce from token: {}", claims.setup_nonce);
+                Some(claims.setup_nonce)
+            },
+            Err(e) => {
+                tracing::warn!("Invalid setup token in status check: {}", e);
+                None
+            }
         }
+    } else {
+        tracing::info!("Setup status check: no setup_token provided, using DB nonce: {:?}", vps.pending_setup_nonce);
+        // Fall back to pending_setup_nonce from DB
+        vps.pending_setup_nonce.clone()
     };
 
-    let cf = match cloudflare {
-        Some(cf) => cf,
-        None => {
-            tracing::warn!("Setup status check: Cloudflare service not configured");
-            return Ok(HttpResponse::Ok().json(SetupStatusResponse {
-                ready: false,
-                hostname: Some(hostname),
-            }));
-        }
-    };
+    // Check tunnel health
+    let http_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| AppError::Internal(format!("Failed to create HTTP client: {}", e)))?;
 
-    let ready = match cf.get_tunnel_status(&tunnel_id).await {
-        Ok(status) => {
-            tracing::info!(
-                "Setup status check: tunnel {} status = '{}' for user {}",
-                tunnel_id, status, user.user_id
-            );
-            // Tunnel is connected if status is "healthy" or "degraded"
-            // (degraded means some connections are up, which is sufficient)
-            status == "healthy" || status == "degraded"
+    let health_url = format!("https://{}/health", hostname);
+    tracing::info!("Setup status check: calling conductor health at {}", health_url);
+
+    let (ready, nonce_matches) = match http_client.get(&health_url).send().await {
+        Ok(resp) => {
+            // Accept both 200 OK and 503 Service Unavailable
+            // Conductor returns 503 when "registered: false" but it's still running
+            let status = resp.status();
+            tracing::info!("Setup status check: conductor responded with status {}", status);
+
+            if status.is_success() || status.as_u16() == 503 {
+                // Parse the health response to check nonce
+                match resp.json::<ConductorHealthResponse>().await {
+                    Ok(health) => {
+                        tracing::info!(
+                            "Setup status check: conductor health response - status: {}, nonce: {:?}",
+                            health.status, health.setup_nonce
+                        );
+                        let nonce_ok = match (&expected_nonce, &health.setup_nonce) {
+                            (Some(expected), Some(actual)) => {
+                                let matches = expected == actual;
+                                tracing::info!(
+                                    "Setup status check: nonce comparison - expected: {}, actual: {}, matches: {}",
+                                    expected, actual, matches
+                                );
+                                matches
+                            },
+                            (None, _) => {
+                                tracing::info!("Setup status check: no expected nonce, accepting conductor");
+                                true
+                            },
+                            (Some(expected), None) => {
+                                tracing::warn!(
+                                    "Setup status check: expected nonce {} but conductor has none",
+                                    expected
+                                );
+                                false
+                            },
+                        };
+                        (nonce_ok, nonce_ok)
+                    }
+                    Err(e) => {
+                        tracing::warn!("Setup status check: failed to parse health response: {}", e);
+                        // Couldn't parse response, fall back to simple status check
+                        // This handles old conductors that don't return nonce
+                        (expected_nonce.is_none(), expected_nonce.is_none())
+                    }
+                }
+            } else {
+                tracing::info!("Setup status check: unexpected status {}, marking not ready", status);
+                (false, false)
+            }
         }
         Err(e) => {
-            tracing::info!(
-                "Setup status check: failed to get tunnel {} status: {}",
-                tunnel_id, e
-            );
-            false
-        }
+            tracing::info!("Setup status check: failed to reach conductor: {}", e);
+            (false, false)
+        },
     };
 
-    // If tunnel is healthy, clear the pending_setup_nonce
-    if ready && vps.pending_setup_nonce.is_some() {
+    // If nonce matched, clear the pending_setup_nonce
+    if ready && nonce_matches && expected_nonce.is_some() {
         let _ = sqlx::query("UPDATE user_vps SET pending_setup_nonce = NULL WHERE id = $1")
             .bind(vps.id)
             .execute(pool.get_ref())
             .await;
         tracing::info!(
-            "Tunnel healthy for user {}, conductor {} is ready (nonce cleared)",
+            "Setup nonce verified for user {}, conductor {} is ready",
             user.user_id, hostname
         );
     }
