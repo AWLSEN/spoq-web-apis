@@ -306,11 +306,7 @@ systemctl daemon-reload
 systemctl enable conductor
 systemctl start conductor
 
-# 8. Download and install Spoq CLI
-curl -sSL "$CLI_URL" -o /usr/local/bin/spoq
-chmod +x /usr/local/bin/spoq
-
-# 9. Setup welcome message
+# 8. Setup welcome message
 cat > /home/spoq/.bashrc << 'BASHRC'
 export PATH="/usr/local/bin:$PATH"
 

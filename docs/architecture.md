@@ -430,7 +430,7 @@ Two things must be installed on each user's VPS:
 | Component | Purpose | Used By |
 |-----------|---------|---------|
 | **Conductor** | Backend API server (handles AI orchestration) | Desktop CLI (via HTTPS) |
-| **Spoq CLI/TUI** | Terminal interface | Mobile/SSH users |
+| **Spoq Web App** | Web interface | All users |
 
 ### Conductor (Backend Service)
 
@@ -560,9 +560,9 @@ systemctl status conductor
 journalctl -u conductor -f  # View logs
 ```
 
-### Spoq CLI/TUI
+### Spoq Web App
 
-The same CLI binary works on both VPS and user's Mac. It detects where it's running and adjusts behavior.
+The web frontend connects to the user's VPS conductor instance.
 
 **Environment Detection:**
 
@@ -783,10 +783,7 @@ systemctl daemon-reload
 systemctl enable conductor
 systemctl start conductor
 
-# 5. Install Spoq CLI/TUI (same URL as user install)
-echo "Installing Spoq CLI..."
-curl -fsSL https://spoq.dev/releases/spoq-linux-amd64 -o /usr/local/bin/spoq
-chmod +x /usr/local/bin/spoq
+# 5. Conductor is already installed above
 
 # 6. Create VPS marker file (so CLI knows it's on VPS, uses localhost)
 mkdir -p /etc/spoq
@@ -1565,7 +1562,7 @@ The CLI handles everything:
 | Central Backend | Rust/Actix | Auth APIs, VPS provisioning, binary downloads |
 | Database | PostgreSQL (Railway) | Users, subscriptions, VPS records |
 | User VPS | Ubuntu + Conductor | AI execution environment |
-| CLI/TUI | Rust | Local interface, signup, everything |
+| Web App | Next.js | Frontend interface |
 | Payments | Stripe | Subscription management (last) |
 | VPS Provider | Hostinger | Infrastructure |
 | Hosting | Railway | Backend + DB |
@@ -1625,7 +1622,7 @@ The CLI handles everything:
 │                                                                 │
 │  IP: 89.116.49.69 (DNS optional)                                │
 │  ├── Conductor (systemd, port 8080)                             │
-│  ├── Spoq CLI (for SSH users)                                   │
+│  ├── (Web frontend connects remotely)                            │
 │  ├── /etc/spoq/vps.marker (VPS detection)                       │
 │  └── Caddy (optional, for HTTPS)                                │
 │                                                                 │
@@ -1652,7 +1649,7 @@ The CLI handles everything:
 4. ✅ Device flow endpoints (init, verify, authorize, token)
 5. ✅ VPS provisioning API (Hostinger)
 6. ✅ VPS management (status, start, stop, restart, reset-password)
-7. ✅ CLI/TUI + install script (`curl -fsSL https://spoq.dev/install.sh | bash`)
+7. ✅ Web app frontend (spoq-website)
 
 **In Progress:**
 
