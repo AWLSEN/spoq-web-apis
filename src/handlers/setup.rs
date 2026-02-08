@@ -8,12 +8,12 @@
 use actix_web::{web, HttpResponse};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
-use std::time::Duration;
 
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthenticatedUser;
 use crate::models::UserVps;
 use crate::services::cloudflare::CloudflareService;
+use crate::services::registration::{generate_vps_secret, hash_code, verify_code};
 use crate::services::token::{create_setup_token, decode_setup_token};
 
 use super::auth::AppState;
@@ -41,6 +41,7 @@ pub struct SetupCredentialsResponse {
     pub jwt_secret: String,
     pub owner_id: String,
     pub setup_nonce: String,
+    pub vps_secret: String,
 }
 
 /// Response for setup status check
@@ -74,8 +75,8 @@ pub async fn create_setup_token_handler(
     // Generate a unique nonce for this setup attempt
     let setup_nonce = uuid::Uuid::new_v4().to_string();
 
-    // Store the nonce in user_vps (if exists) for later verification
-    sqlx::query("UPDATE user_vps SET pending_setup_nonce = $1 WHERE user_id = $2 AND status NOT IN ('terminated')")
+    // Store the nonce and reset conductor_verified_at (prevents stale "ready" state on re-setup)
+    sqlx::query("UPDATE user_vps SET pending_setup_nonce = $1, conductor_verified_at = NULL WHERE user_id = $2 AND status NOT IN ('terminated')")
         .bind(&setup_nonce)
         .bind(user.user_id)
         .execute(pool.get_ref())
@@ -175,16 +176,22 @@ pub async fn get_setup_credentials(
         tracing::warn!("Failed to update tunnel ingress (continuing): {}", e);
     }
 
-    // Store tunnel_id in DB if we have a VPS record
+    // Generate vps_secret for heartbeat authentication
+    let vps_secret = generate_vps_secret();
+    let vps_secret_hash = hash_code(&vps_secret)
+        .map_err(|e| AppError::Internal(format!("Failed to hash vps_secret: {}", e)))?;
+
+    // Store tunnel_id and vps_secret_hash in DB, reset conductor_verified_at
     if let Some(ref vps) = vps {
-        if vps.tunnel_id.is_none() || vps.tunnel_id.as_deref() != Some(&creds.tunnel_id) {
-            let _ = sqlx::query("UPDATE user_vps SET tunnel_id = $1 WHERE id = $2 AND user_id = $3")
-                .bind(&creds.tunnel_id)
-                .bind(vps.id)
-                .bind(user_id)
-                .execute(pool.get_ref())
-                .await;
-        }
+        let _ = sqlx::query(
+            "UPDATE user_vps SET tunnel_id = $1, vps_secret_hash = $4, conductor_verified_at = NULL WHERE id = $2 AND user_id = $3"
+        )
+            .bind(&creds.tunnel_id)
+            .bind(vps.id)
+            .bind(user_id)
+            .bind(&vps_secret_hash)
+            .execute(pool.get_ref())
+            .await;
     } else {
         // Create a minimal VPS record for local mode so we can track the tunnel
         let vps_id = uuid::Uuid::new_v4();
@@ -194,12 +201,12 @@ pub async fn get_setup_credentials(
                 id, user_id, provider, hostname, ip_address,
                 status, plan_id, template_id, data_center_id,
                 ssh_username, ssh_password_hash, jwt_secret,
-                device_type, tunnel_id
+                device_type, tunnel_id, vps_secret_hash
             ) VALUES (
                 $1, $2, 'local', $3, '127.0.0.1',
                 'ready', 'local', 0, 0,
                 '', '', '',
-                'local', $4
+                'local', $4, $5
             )
             "#,
         )
@@ -207,6 +214,7 @@ pub async fn get_setup_credentials(
         .bind(user_id)
         .bind(&hostname)
         .bind(&creds.tunnel_id)
+        .bind(&vps_secret_hash)
         .execute(pool.get_ref())
         .await;
     }
@@ -231,35 +239,22 @@ pub async fn get_setup_credentials(
         jwt_secret: app_state.config.jwt_secret.clone(),
         owner_id: user_id.to_string(),
         setup_nonce,
+        vps_secret,
     }))
 }
 
-/// Query parameters for setup status endpoint
-#[derive(Debug, Deserialize)]
-pub struct SetupStatusQuery {
-    pub setup_token: Option<String>,
-}
-
-/// Health response from conductor with optional nonce
-#[derive(Debug, Deserialize)]
-struct ConductorHealthResponse {
-    pub status: String,
-    #[serde(default)]
-    pub setup_nonce: Option<String>,
-}
-
-/// Check if the user's local conductor tunnel is healthy.
+/// Check if the user's local conductor is ready.
 ///
 /// GET /api/setup/status
 ///
-/// Requires authentication. Checks the tunnel health by making an HTTP
-/// request to the user's hostname. If a setup_token query param is provided,
-/// extracts the expected nonce and verifies it matches the conductor's response.
+/// Requires authentication. Checks the database for conductor readiness
+/// based on heartbeat data (conductor_verified_at) instead of making
+/// an HTTP request through Cloudflare (which gets blocked by Bot Fight Mode).
 pub async fn get_setup_status(
     user: AuthenticatedUser,
-    query: web::Query<SetupStatusQuery>,
+    _query: web::Query<std::collections::HashMap<String, String>>,
     pool: web::Data<PgPool>,
-    app_state: web::Data<AppState>,
+    _app_state: web::Data<AppState>,
 ) -> AppResult<HttpResponse> {
     let vps: Option<UserVps> = sqlx::query_as(
         "SELECT * FROM user_vps WHERE user_id = $1 AND status NOT IN ('terminated') ORDER BY created_at DESC LIMIT 1",
@@ -278,107 +273,129 @@ pub async fn get_setup_status(
         }
     };
 
-    let hostname = vps.hostname.clone();
-
-    // Extract expected nonce from setup token if provided
-    let expected_nonce = if let Some(ref token) = query.setup_token {
-        match decode_setup_token(token, &app_state.config.jwt_secret) {
-            Ok(claims) => {
-                tracing::info!("Setup status check: extracted nonce from token: {}", claims.setup_nonce);
-                Some(claims.setup_nonce)
-            },
-            Err(e) => {
-                tracing::warn!("Invalid setup token in status check: {}", e);
-                None
-            }
-        }
-    } else {
-        tracing::info!("Setup status check: no setup_token provided, using DB nonce: {:?}", vps.pending_setup_nonce);
-        // Fall back to pending_setup_nonce from DB
-        vps.pending_setup_nonce.clone()
-    };
-
-    // Check tunnel health
-    let http_client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|e| AppError::Internal(format!("Failed to create HTTP client: {}", e)))?;
-
-    let health_url = format!("https://{}/health", hostname);
-    tracing::info!("Setup status check: calling conductor health at {}", health_url);
-
-    let (ready, nonce_matches) = match http_client.get(&health_url).send().await {
-        Ok(resp) => {
-            // Accept both 200 OK and 503 Service Unavailable
-            // Conductor returns 503 when "registered: false" but it's still running
-            let status = resp.status();
-            tracing::info!("Setup status check: conductor responded with status {}", status);
-
-            if status.is_success() || status.as_u16() == 503 {
-                // Parse the health response to check nonce
-                match resp.json::<ConductorHealthResponse>().await {
-                    Ok(health) => {
-                        tracing::info!(
-                            "Setup status check: conductor health response - status: {}, nonce: {:?}",
-                            health.status, health.setup_nonce
-                        );
-                        let nonce_ok = match (&expected_nonce, &health.setup_nonce) {
-                            (Some(expected), Some(actual)) => {
-                                let matches = expected == actual;
-                                tracing::info!(
-                                    "Setup status check: nonce comparison - expected: {}, actual: {}, matches: {}",
-                                    expected, actual, matches
-                                );
-                                matches
-                            },
-                            (None, _) => {
-                                tracing::info!("Setup status check: no expected nonce, accepting conductor");
-                                true
-                            },
-                            (Some(expected), None) => {
-                                tracing::warn!(
-                                    "Setup status check: expected nonce {} but conductor has none",
-                                    expected
-                                );
-                                false
-                            },
-                        };
-                        (nonce_ok, nonce_ok)
-                    }
-                    Err(e) => {
-                        tracing::warn!("Setup status check: failed to parse health response: {}", e);
-                        // Couldn't parse response, fall back to simple status check
-                        // This handles old conductors that don't return nonce
-                        (expected_nonce.is_none(), expected_nonce.is_none())
-                    }
-                }
-            } else {
-                tracing::info!("Setup status check: unexpected status {}, marking not ready", status);
-                (false, false)
-            }
-        }
-        Err(e) => {
-            tracing::info!("Setup status check: failed to reach conductor: {}", e);
-            (false, false)
-        },
-    };
-
-    // If nonce matched, clear the pending_setup_nonce
-    if ready && nonce_matches && expected_nonce.is_some() {
-        let _ = sqlx::query("UPDATE user_vps SET pending_setup_nonce = NULL WHERE id = $1")
-            .bind(vps.id)
-            .execute(pool.get_ref())
-            .await;
-        tracing::info!(
-            "Setup nonce verified for user {}, conductor {} is ready",
-            user.user_id, hostname
-        );
-    }
+    // Check if conductor has reported via heartbeat:
+    // - conductor_verified_at set → heartbeat received from authenticated conductor
+    // - pending_setup_nonce cleared → correct conductor verified (nonce matched)
+    let ready = vps.conductor_verified_at.is_some() && vps.pending_setup_nonce.is_none();
 
     Ok(HttpResponse::Ok().json(SetupStatusResponse {
         ready,
-        hostname: Some(hostname),
+        hostname: Some(vps.hostname),
     }))
+}
+
+/// Request body for conductor heartbeat
+#[derive(Debug, Deserialize)]
+pub struct HeartbeatRequest {
+    pub owner_id: String,
+    pub vps_secret: String,
+    pub setup_nonce: Option<String>,
+    pub version: Option<String>,
+}
+
+/// Response for conductor heartbeat
+#[derive(Debug, Serialize)]
+pub struct HeartbeatResponse {
+    pub ok: bool,
+}
+
+/// Receive a heartbeat from a running conductor instance.
+///
+/// POST /api/setup/heartbeat
+///
+/// No JWT auth — authenticated by vps_secret in the request body.
+/// The conductor calls this endpoint after startup and periodically
+/// to report its readiness, bypassing Cloudflare Bot Fight Mode.
+pub async fn conductor_heartbeat(
+    body: web::Json<HeartbeatRequest>,
+    pool: web::Data<PgPool>,
+) -> AppResult<HttpResponse> {
+    let user_id: uuid::Uuid = body.owner_id.parse()
+        .map_err(|_| AppError::BadRequest("Invalid owner_id".to_string()))?;
+
+    let vps: Option<UserVps> = sqlx::query_as(
+        "SELECT * FROM user_vps WHERE user_id = $1 AND status NOT IN ('terminated') ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(user_id)
+    .fetch_optional(pool.get_ref())
+    .await?;
+
+    let vps = match vps {
+        Some(v) => v,
+        None => {
+            tracing::warn!("Heartbeat from unknown user {}", user_id);
+            return Err(AppError::NotFound("No VPS record found".to_string()));
+        }
+    };
+
+    // Verify vps_secret
+    let secret_hash = match &vps.vps_secret_hash {
+        Some(h) if !h.is_empty() => h,
+        _ => {
+            tracing::warn!("Heartbeat for user {} but no vps_secret_hash in DB", user_id);
+            return Err(AppError::Unauthorized("No vps_secret configured".to_string()));
+        }
+    };
+
+    if !verify_code(&body.vps_secret, secret_hash) {
+        tracing::warn!("Heartbeat for user {} failed vps_secret verification", user_id);
+        return Err(AppError::Unauthorized("Invalid vps_secret".to_string()));
+    }
+
+    // Nonce gate: determine if we should update conductor_verified_at
+    let should_update = match &vps.pending_setup_nonce {
+        None => {
+            // No pending nonce — ongoing heartbeat, setup already verified
+            true
+        }
+        Some(db_nonce) => {
+            match &body.setup_nonce {
+                Some(req_nonce) if req_nonce == db_nonce => {
+                    // Nonce matches — correct conductor instance
+                    true
+                }
+                _ => {
+                    // Nonce mismatch — wrong setup instance (old conductor or missing nonce)
+                    tracing::warn!(
+                        "Heartbeat nonce mismatch for user {}: db={}, request={:?}",
+                        user_id, db_nonce, body.setup_nonce
+                    );
+                    false
+                }
+            }
+        }
+    };
+
+    if !should_update {
+        return Ok(HttpResponse::Ok().json(HeartbeatResponse { ok: false }));
+    }
+
+    // Update conductor_verified_at and clear pending_setup_nonce if it matched
+    if vps.pending_setup_nonce.is_some() {
+        // Nonce matched — clear it and set verified
+        sqlx::query(
+            "UPDATE user_vps SET conductor_verified_at = NOW(), pending_setup_nonce = NULL WHERE id = $1"
+        )
+        .bind(vps.id)
+        .execute(pool.get_ref())
+        .await?;
+        tracing::info!(
+            "Conductor heartbeat: user {} verified (nonce matched, version: {:?})",
+            user_id, body.version
+        );
+    } else {
+        // Ongoing heartbeat — just update timestamp
+        sqlx::query("UPDATE user_vps SET conductor_verified_at = NOW() WHERE id = $1")
+            .bind(vps.id)
+            .execute(pool.get_ref())
+            .await?;
+        tracing::debug!(
+            "Conductor heartbeat: user {} liveness update (version: {:?})",
+            user_id, body.version
+        );
+    }
+
+    Ok(HttpResponse::Ok().json(HeartbeatResponse { ok: true }))
 }
 
 /// Serve the setup shell script.
@@ -527,6 +544,7 @@ main() {{
     JWT_SECRET=$(parse_json "jwt_secret" "$CREDS")
     OWNER_ID=$(parse_json "owner_id" "$CREDS")
     SETUP_NONCE=$(parse_json "setup_nonce" "$CREDS")
+    VPS_SECRET=$(parse_json "vps_secret" "$CREDS")
 
     if [ -z "$TUNNEL_TOKEN" ] || [ -z "$HOSTNAME" ]; then
         error "Failed to parse credentials response."
@@ -536,6 +554,9 @@ main() {{
     fi
     if [ -z "$SETUP_NONCE" ]; then
         error "Failed to parse setup nonce."
+    fi
+    if [ -z "$VPS_SECRET" ]; then
+        error "Failed to parse VPS secret."
     fi
 
     info "Tunnel hostname: $HOSTNAME"
@@ -615,6 +636,10 @@ owner_id = "$OWNER_ID"
 
 [setup]
 nonce = "$SETUP_NONCE"
+
+[api]
+vps_secret = "$VPS_SECRET"
+base_url = "$API_URL"
 CFGEOF
     chmod 600 "$SPOQ_DIR/config/config.toml"
 
@@ -650,6 +675,10 @@ CFGEOF
         <string>$OWNER_ID</string>
         <key>CONDUCTOR_SERVER__PORT</key>
         <string>8000</string>
+        <key>CONDUCTOR_API__VPS_SECRET</key>
+        <string>$VPS_SECRET</string>
+        <key>CONDUCTOR_API__BASE_URL</key>
+        <string>$API_URL</string>
     </dict>
     <key>StandardOutPath</key>
     <string>$SPOQ_DIR/logs/conductor.log</string>
@@ -665,6 +694,8 @@ LPEOF
         CONDUCTOR_AUTH__JWT_SECRET="$JWT_SECRET" \
         CONDUCTOR_AUTH__OWNER_ID="$OWNER_ID" \
         CONDUCTOR_SERVER__PORT=8000 \
+        CONDUCTOR_API__VPS_SECRET="$VPS_SECRET" \
+        CONDUCTOR_API__BASE_URL="$API_URL" \
         nohup "$SPOQ_DIR/bin/conductor" > "$SPOQ_DIR/logs/conductor.log" 2>&1 &
         CONDUCTOR_PID=$!
         echo "$CONDUCTOR_PID" > "$SPOQ_DIR/conductor.pid"
@@ -728,10 +759,10 @@ LCFEOF
         chmod 600 "$SPOQ_DIR/cloudflared.pid"
     fi
 
-    # Wait for tunnel to be ready
+    # Wait for tunnel to be ready (reduced retries — conductor heartbeat handles verification)
     info "Waiting for tunnel to connect..."
     RETRIES=0
-    while [ $RETRIES -lt 15 ]; do
+    while [ $RETRIES -lt 5 ]; do
         if curl -fsSo /dev/null "https://$HOSTNAME/health" 2>/dev/null; then
             break
         fi
@@ -739,9 +770,8 @@ LCFEOF
         sleep 2
     done
 
-    if [ $RETRIES -ge 15 ]; then
-        warn "Tunnel not ready yet — it may take a moment to propagate."
-        warn "You can check status at: https://$HOSTNAME/health"
+    if [ $RETRIES -ge 5 ]; then
+        info "Tunnel still propagating — the conductor will report its status directly."
     else
         success "Tunnel connected!"
     fi

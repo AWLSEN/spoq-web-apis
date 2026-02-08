@@ -40,7 +40,8 @@ pub use payment::{
     PaymentStatusResponse,
 };
 pub use setup::{
-    create_setup_token_handler, get_setup_credentials, get_setup_script, get_setup_status,
-    SetupCredentialsResponse, SetupStatusResponse, SetupTokenResponse,
+    conductor_heartbeat, create_setup_token_handler, get_setup_credentials, get_setup_script,
+    get_setup_status, HeartbeatResponse, SetupCredentialsResponse, SetupStatusResponse,
+    SetupTokenResponse,
 };
 pub use webhooks::stripe_webhook;
