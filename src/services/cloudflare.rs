@@ -843,6 +843,58 @@ impl CloudflareService {
         }
     }
 
+    /// Get the status of a Cloudflare Tunnel by ID.
+    ///
+    /// Returns the tunnel's `status` field: `healthy`, `degraded`, `down`, or `inactive`.
+    /// This uses the Cloudflare API directly, bypassing the proxy/WAF entirely.
+    pub async fn get_tunnel_status(
+        &self,
+        tunnel_id: &str,
+    ) -> Result<String, CloudflareServiceError> {
+        let account_id = self
+            .account_id
+            .as_ref()
+            .ok_or(CloudflareServiceError::AccountIdNotConfigured)?;
+
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/accounts/{}/cfd_tunnel/{}",
+            account_id, tunnel_id
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.api_token))
+            .send()
+            .await?;
+
+        #[derive(Debug, Deserialize)]
+        struct TunnelStatusResult {
+            #[allow(dead_code)]
+            id: String,
+            status: Option<String>,
+        }
+
+        let cf_response: CloudflareResponse<TunnelStatusResult> = response.json().await?;
+
+        if cf_response.success {
+            let result = cf_response.result.ok_or(CloudflareServiceError::TunnelNotFound)?;
+            Ok(result.status.unwrap_or_else(|| "unknown".to_string()))
+        } else {
+            let error_msg = cf_response
+                .errors
+                .first()
+                .map(|e| e.message.clone())
+                .unwrap_or_else(|| "Unknown error".to_string());
+
+            if error_msg.contains("not found") || error_msg.contains("does not exist") {
+                Err(CloudflareServiceError::TunnelNotFound)
+            } else {
+                Err(CloudflareServiceError::ApiError(error_msg))
+            }
+        }
+    }
+
     /// Get or create a tunnel by name
     /// If tunnel exists, fetches its token. If not, creates a new tunnel.
     /// Returns TunnelCredentials with the token for cloudflared authentication.
