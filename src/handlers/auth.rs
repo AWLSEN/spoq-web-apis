@@ -63,6 +63,11 @@ pub struct CallbackQuery {
 pub struct WebAuthorizeQuery {
     /// Random state parameter for CSRF protection
     pub state: String,
+    /// Optional redirect URI override (must be on the allowlist).
+    /// Used by native clients (iOS, desktop) that need a platform-specific
+    /// callback (e.g. https://app.spoq.dev/auth/ios-bridge which 302s to spoq://).
+    #[serde(default)]
+    pub redirect_uri: Option<String>,
 }
 
 /// Response for web OAuth authorize URL.
@@ -100,6 +105,10 @@ pub struct TokenResponse {
 pub struct WebExchangeRequest {
     /// Authorization code from GitHub
     pub code: String,
+    /// Optional redirect URI override (must match the one used in authorize-url
+    /// and must be on the allowlist). See WebAuthorizeQuery::redirect_uri.
+    #[serde(default)]
+    pub redirect_uri: Option<String>,
 }
 
 /// Public user profile response.
@@ -506,15 +515,44 @@ pub async fn github_callback(
         .finish()
 }
 
+/// Resolve a client-supplied redirect_uri against the config default + optional
+/// allowlist (comma-separated env var `GITHUB_WEB_REDIRECT_URI_ALLOWLIST`).
+/// Returns the default when the client didn't supply one.
+fn resolve_redirect_uri(
+    supplied: Option<&str>,
+    config: &crate::config::Config,
+) -> Result<String, HttpResponse> {
+    let Some(requested) = supplied else {
+        return Ok(config.github_web_redirect_uri.clone());
+    };
+    let allowlist_raw = std::env::var("GITHUB_WEB_REDIRECT_URI_ALLOWLIST").unwrap_or_default();
+    let mut allowed: Vec<&str> = allowlist_raw
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    allowed.push(&config.github_web_redirect_uri);
+    if allowed.iter().any(|a| *a == requested) {
+        Ok(requested.to_string())
+    } else {
+        Err(HttpResponse::BadRequest()
+            .json(serde_json::json!({"error": "redirect_uri not allowlisted"})))
+    }
+}
+
 /// Returns the GitHub OAuth authorization URL for web login.
 pub async fn web_authorize_url(
     query: web::Query<WebAuthorizeQuery>,
     data: web::Data<AppState>,
 ) -> HttpResponse {
+    let redirect_uri = match resolve_redirect_uri(query.redirect_uri.as_deref(), &data.config) {
+        Ok(uri) => uri,
+        Err(resp) => return resp,
+    };
     let github_config = GitHubOAuthConfig {
         client_id: data.config.github_client_id.clone(),
         client_secret: data.config.github_client_secret.clone(),
-        redirect_uri: data.config.github_web_redirect_uri.clone(),
+        redirect_uri,
     };
 
     let authorize_url = get_authorize_url(&github_config, &query.state);
@@ -527,9 +565,13 @@ pub async fn web_exchange(
     body: web::Json<WebExchangeRequest>,
     data: web::Data<AppState>,
 ) -> HttpResponse {
+    let redirect_uri = match resolve_redirect_uri(body.redirect_uri.as_deref(), &data.config) {
+        Ok(uri) => uri,
+        Err(resp) => return resp,
+    };
     let github_user = match fetch_github_user_from_code(
         &body.code,
-        &data.config.github_web_redirect_uri,
+        &redirect_uri,
         &data,
     )
     .await
