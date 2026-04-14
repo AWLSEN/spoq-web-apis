@@ -4,7 +4,7 @@
 //! GitHub OAuth authentication with JWT token management, device flow support,
 //! and VPS provisioning via Hostinger.
 
-use actix_web::{middleware::Logger, web, App, HttpServer};
+use actix_web::{middleware::Logger, web, App, HttpRequest, HttpResponse, HttpServer};
 use tokio::signal;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -161,7 +161,9 @@ async fn main() -> std::io::Result<()> {
                     .route("/device", web::post().to(device_init))
                     .route("/verify", web::get().to(device_verify))
                     .route("/authorize", web::post().to(device_authorize))
-                    .route("/device/token", web::post().to(device_token)),
+                    .route("/device/token", web::post().to(device_token))
+                    // iOS OAuth bridge: receives GitHub callback, trampolines to spoq:// scheme
+                    .route("/ios-bridge", web::get().to(ios_bridge_handler)),
             );
 
         // Add Cloudflare client if configured
@@ -256,4 +258,53 @@ async fn main() -> std::io::Result<()> {
     });
 
     server.await
+}
+
+/// iOS OAuth bridge handler. GitHub redirects here with `?code=X&state=Y` after
+/// the user authenticates. We serve an HTML page that immediately trampolines to
+/// `spoq://auth/callback?code=X&state=Y` so ASWebAuthenticationSession catches it.
+async fn ios_bridge_handler(req: HttpRequest) -> HttpResponse {
+    let query = req.query_string();
+    let params: std::collections::HashMap<String, String> = query
+        .split('&')
+        .filter_map(|kv| {
+            let mut parts = kv.splitn(2, '=');
+            Some((parts.next()?.to_string(), parts.next().unwrap_or("").to_string()))
+        })
+        .collect();
+
+    let code = params.get("code").cloned().unwrap_or_default();
+    let state = params.get("state").cloned().unwrap_or_default();
+    let error = params.get("error").cloned().unwrap_or_default();
+
+    let mut target = String::from("spoq://auth/callback?");
+    if !code.is_empty() {
+        target.push_str(&format!("code={}&", urlencoding::encode(&code)));
+    }
+    if !state.is_empty() {
+        target.push_str(&format!("state={}&", urlencoding::encode(&state)));
+    }
+    if !error.is_empty() {
+        target.push_str(&format!("error={}&", urlencoding::encode(&error)));
+    }
+    target.pop(); // trailing & or ?
+
+    let html = format!(
+        r#"<!doctype html>
+<html><head>
+<meta charset="utf-8"/>
+<meta http-equiv="refresh" content="0; url={target}"/>
+<title>Returning to SPOQ…</title>
+<style>html,body{{height:100%;margin:0}}body{{display:flex;align-items:center;justify-content:center;background:#0A0A0A;color:#EDEDED;font-family:system-ui}}
+.b{{text-align:center}}h1{{font-size:11px;letter-spacing:.3em;text-transform:uppercase;color:#E63917}}p{{font-size:13px;color:#888}}a{{color:#E63917}}</style>
+</head><body>
+<div class="b"><h1>Returning to SPOQ</h1><p>If the app doesn't open, <a href="{target}">tap here</a>.</p></div>
+<script>window.location.replace("{target}");</script>
+</body></html>"#
+    );
+
+    HttpResponse::Ok()
+        .content_type("text/html; charset=utf-8")
+        .insert_header(("Cache-Control", "no-store, max-age=0"))
+        .body(html)
 }
